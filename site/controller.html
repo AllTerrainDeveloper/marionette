@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+	<title>Motion Puppet — Puppeteer</title>
+	<meta name="theme-color" content="#120b0a">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23160b0d'/%3E%3Cpath d='M12 14h40M32 8v12M18 14v18M46 14v18M32 20v8' stroke='%23d9a441' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='32' cy='36' r='8' fill='%23e8b98a'/%3E%3Crect x='24' y='45' width='16' height='13' rx='4' fill='%231f6f6b'/%3E%3C/svg%3E">
+	<link rel="stylesheet" href="css/controller.css">
+	<script type="importmap">
+	{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/three-addons/" } }
+	</script>
+</head>
+<body>
+	<main class="board" id="board" hidden>
+		<canvas id="view" aria-label="Top-down view of the puppet and its strings"></canvas>
+		<canvas id="overlay" aria-hidden="true"></canvas>
+
+		<header class="top">
+			<div class="top__row">
+				<span class="link" id="link"><i></i><b id="role">Connecting…</b></span>
+				<span class="top__spacer"></span>
+				<button class="chip" id="btn-pro" type="button" hidden>PRO ×2</button>
+			</div>
+			<nav class="modes" id="modes" aria-label="Control configuration"></nav>
+			<p class="blurb" id="blurb"></p>
+		</header>
+
+		<section class="sheet" id="sheet" hidden aria-live="polite">
+			<div class="sheet__head">
+				<div>
+					<h2 id="sheet-title"></h2>
+					<p id="sheet-sub"></p>
+				</div>
+				<div class="meter" aria-hidden="true"><i id="sheet-meter"></i></div>
+			</div>
+			<label class="lift" id="lift">
+				<span id="lift-label">Lift</span>
+				<input id="lift-range" type="range" min="0" max="100" value="0">
+			</label>
+			<div class="sheet__actions" id="sheet-actions"></div>
+		</section>
+
+		<footer class="dock">
+			<div class="stick" id="stick" hidden>
+				<div class="stick__pad" id="stick-pad"><i id="stick-nub"></i></div>
+				<span id="stick-label">Stick</span>
+			</div>
+			<div class="actions" id="actions"></div>
+			<div class="tools">
+				<button type="button" id="tool-camera" aria-pressed="false" title="Move the camera instead of the puppet"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-2h6l2 2h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg><span>Camera</span></button>
+				<button type="button" id="tool-multi" aria-pressed="false" title="Select several controls"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="11" height="11" rx="2"/><rect x="9" y="9" width="11" height="11" rx="2"/></svg><span>Multi</span></button>
+				<button type="button" id="tool-level" title="Recalibrate the phone's neutral pose"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg><span>Level</span></button>
+				<button type="button" id="tool-reset" title="Reset the puppet and every control"><svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 1 0 2.2-5.1"/><path d="M4 4v5h5"/></svg><span>Reset</span></button>
+				<button type="button" id="tool-rig" hidden title="Edit the custom rig"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h12M20 17h0"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="17" r="2"/></svg><span>Rig</span></button>
+			</div>
+		</footer>
+	</main>
+
+	<section class="screen" id="intro">
+		<div class="screen__card">
+			<p class="kicker">Motion Puppet</p>
+			<h1>You are about to hold the strings.</h1>
+			<p id="intro-text">Your phone becomes the wooden control bar of the marionette on the big screen. Tilt it, shake it, and pull the strings with your fingers.</p>
+			<button class="primary" id="btn-start" type="button">Become the puppeteer</button>
+			<p class="fine" id="intro-status" role="status" aria-live="polite">Uses your phone's motion sensors. Nothing is recorded or stored.</p>
+		</div>
+	</section>
+
+	<section class="screen" id="calib" hidden>
+		<div class="screen__card">
+			<p class="kicker" id="calib-kicker">Calibration</p>
+			<h1 id="calib-title">Hold your phone flat, like a tray.</h1>
+			<p id="calib-text">Point its top edge at the stage and keep it still. This pose becomes "bar level" — you can redo it any time with the Level button.</p>
+			<div class="level" id="level" aria-hidden="true">
+				<svg viewBox="0 0 200 200">
+					<circle cx="100" cy="100" r="92" class="level__rim"/>
+					<circle cx="100" cy="100" r="34" class="level__zone"/>
+					<path d="M100 8v22M100 170v22M8 100h22M170 100h22" class="level__ticks"/>
+					<circle cx="100" cy="100" r="92" class="level__progress" id="level-progress" pathLength="100"/>
+					<circle cx="100" cy="100" r="22" class="level__bubble" id="level-bubble"/>
+				</svg>
+			</div>
+			<p class="fine" id="calib-status" role="status" aria-live="polite">Looking for motion sensors…</p>
+			<button class="primary" id="btn-calibrate" type="button">Calibrate now</button>
+			<button class="ghost" id="btn-skip" type="button">Use touch only</button>
+		</div>
+	</section>
+
+	<section class="panel" id="rig-panel" hidden aria-label="Custom rig editor">
+		<header class="panel__head">
+			<h2>Custom Rig</h2>
+			<button class="chip" id="rig-close" type="button">Done</button>
+		</header>
+		<nav class="tabs" id="rig-tabs">
+			<button type="button" data-tab="strings" aria-pressed="true">Strings</button>
+			<button type="button" data-tab="mapping" aria-pressed="false">Motion</button>
+			<button type="button" data-tab="body" aria-pressed="false">Body</button>
+			<button type="button" data-tab="saved" aria-pressed="false">Saved</button>
+		</nav>
+		<div class="panel__body" id="rig-body"></div>
+	</section>
+
+	<div class="toast" id="toast" role="status" aria-live="polite"></div>
+	<noscript><p style="padding:2rem;color:#f4e9d2">The puppeteer's board needs JavaScript.</p></noscript>
+	<script type="module" src="js/controller/main.js"></script>
+</body>
+</html>

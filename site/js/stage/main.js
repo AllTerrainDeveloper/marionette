@@ -1,0 +1,273 @@
+// Stage (desktop): owns the simulation, renders the theatre, pairs up to two
+// phones (one QR code each) and streams puppet state to them.
+
+import * as THREE from 'three';
+import RAPIER from '../../vendor/rapier.mjs';
+import qrcode from '../../vendor/qrcode.mjs';
+import { RIG } from '../shared/rig-config.js';
+import { MODES } from '../shared/modes.js';
+import { buildPuppet, posePuppet } from '../shared/puppet-geometry.js';
+import { RigView, StringsView } from '../shared/rig-view.js';
+import { encodeState, decodeInput, seqNewer, PROTOCOL_VERSION } from '../shared/protocol.js';
+import { HostLink } from '../shared/net.js';
+import { PuppetSim } from './sim.js';
+import { Controller } from './control.js';
+import { Stage } from './scene.js';
+
+const $ = (sel) => document.querySelector(sel);
+const SNAPSHOT_HZ = 40;
+const ROLE_NAMES = ['Puppeteer one', 'Puppeteer two'];
+
+const curtain = $('#curtain');
+const curtainText = $('#curtain-text');
+const toastEl = $('#toast');
+let toastTimer = 0;
+function toast(text) {
+	toastEl.textContent = text;
+	toastEl.classList.add('is-on');
+	clearTimeout(toastTimer);
+	toastTimer = setTimeout(() => toastEl.classList.remove('is-on'), 2600);
+}
+
+function qrSvg(text) {
+	const qr = qrcode(0, 'M');
+	qr.addData(text);
+	qr.make();
+	const n = qr.getModuleCount();
+	let d = '';
+	for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (qr.isDark(y, x)) d += `M${x} ${y}h1v1h-1z`;
+	return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1 -1 ${n + 2} ${n + 2}" shape-rendering="crispEdges"><path fill="#1a0f0a" d="${d}"/></svg>`;
+}
+
+async function boot() {
+	await RAPIER.init();
+	curtainText.textContent = 'Stringing the puppet…';
+	const sim = new PuppetSim(RAPIER);
+	const controller = new Controller(sim);
+	// Let the puppet settle onto its strings before the curtain rises.
+	for (let i = 0; i < sim.opts.hz * 1.5; i++) { controller.update(); sim.step(); }
+
+	const canvas = $('#stage');
+	const stage = new Stage(canvas);
+	const puppet = buildPuppet('high');
+	stage.scene.add(puppet.root);
+	const rigView = new RigView({ materials: puppet.materials });
+	stage.scene.add(rigView.group);
+	const strings = new StringsView({ width: 1.5, color: 0xeadfc6, eyeMaterial: puppet.materials.brass, parts: puppet.parts });
+	stage.scene.add(strings.group);
+	let shownStrings = null;
+
+	const resize = () => {
+		const w = window.innerWidth, h = window.innerHeight;
+		stage.resize(w, h);
+		strings.setResolution(w * stage.size[2], h * stage.size[2]);
+	};
+	window.addEventListener('resize', resize);
+	resize();
+
+	// ------------------------------------------------------------ pairing
+	const pairing = $('#pairing');
+	const modeLabel = $('#mode-label');
+	const phonesLabel = $('#phones-label');
+	const slots = [0, 1].map((slot) => {
+		const el = pairing.querySelector(`[data-slot="${slot}"]`);
+		return { slot, el, qr: el.querySelector('.ticket__qr'), state: el.querySelector('.ticket__state'), link: new HostLink(), seq: -1, got: false, name: '' };
+	});
+
+	function refreshHud() {
+		const n = controller.phones;
+		pairing.classList.toggle('is-live', n > 0);
+		modeLabel.textContent = n ? controller.mode.title : 'Waiting in the wings';
+		phonesLabel.textContent = n === 0
+			? 'No puppeteer yet — the puppet is rehearsing on its own'
+			: n === 1 ? 'One puppeteer on the strings' : 'Pro: two puppeteers, one on each bar';
+	}
+
+	function broadcast(message, except = -1) {
+		for (const s of slots) if (s.slot !== except && s.link.open) s.link.send(message);
+	}
+	const peers = () => ({ t: 'peers', phones: controller.phones, slots: slots.map((s) => s.link.open) });
+
+	for (const s of slots) {
+		const link = s.link;
+		s.qr.classList.add('is-empty');
+		link.oncode = (code) => {
+			const url = new URL('controller.html', location.href);
+			url.search = '';
+			url.hash = code;
+			s.qr.classList.remove('is-empty');
+			s.qr.innerHTML = qrSvg(url.href);
+			s.qr.dataset.url = url.href;
+			s.state.textContent = `Ready — code ${code.slice(0, 4)} ${code.slice(4)}`;
+		};
+		link.onstatus = (status) => {
+			if (status === 'connecting') s.state.textContent = 'A phone is joining…';
+			if (status === 'error') s.state.textContent = 'Pairing service unreachable — retrying…';
+		};
+		link.onopen = () => {
+			controller.connect(s.slot);
+			s.seq = -1; s.got = false;
+			s.el.classList.add('is-paired');
+			s.state.textContent = 'Connected';
+			link.send({ ...peers(), t: 'welcome', v: PROTOCOL_VERSION, slot: s.slot, mode: controller.mode.id, custom: controller.custom, locks: [...controller.locks] });
+			broadcast(peers(), s.slot);
+			if (controller.phones === 1) controller.play('greet');
+			toast(`${ROLE_NAMES[s.slot]} has taken the strings`);
+			refreshHud();
+		};
+		link.onclose = (wasOpen) => {
+			if (wasOpen) {
+				controller.disconnect(s.slot);
+				toast(`${ROLE_NAMES[s.slot]} let go`);
+				broadcast(peers());
+				if (controller.phones === 0) { controller.setLocks([]); controller.setMode('classic'); }
+			}
+			s.el.classList.remove('is-paired');
+			s.qr.classList.add('is-empty');
+			s.qr.innerHTML = '';
+			s.state.textContent = 'Preparing a fresh code…';
+			refreshHud();
+			link.listen();
+		};
+		link.onpacket = (buffer) => {
+			const input = decodeInput(buffer);
+			if (!input) return;
+			if (s.got && !seqNewer(input.seq, s.seq)) return;   // stale or duplicate
+			s.seq = input.seq; s.got = true;
+			controller.setInput(s.slot, input);
+		};
+		link.onmessage = (msg) => {
+			switch (msg.t) {
+				case 'hello': s.name = String(msg.name || '').slice(0, 24); break;
+				case 'mode':
+					if (MODES.some((m) => m.id === msg.id)) {
+						controller.setMode(msg.id);
+						broadcast({ t: 'mode', id: controller.mode.id });
+						refreshHud();
+					}
+					break;
+				case 'custom': controller.setCustom(msg.rig); broadcast({ t: 'custom', rig: controller.custom }, s.slot); break;
+				case 'locks':
+					if (Array.isArray(msg.joints)) {
+						controller.setLocks(msg.joints.filter((i) => Number.isInteger(i) && i >= 0 && i < RIG.joints.length));
+						broadcast({ t: 'locks', joints: [...controller.locks] }, s.slot);
+					}
+					break;
+				case 'act': if (typeof msg.id === 'string') controller.action(msg.id.slice(0, 16)); break;
+				case 'reset': controller.reset(); toast('Puppet reset'); break;
+				case 'cal': toast(`${ROLE_NAMES[s.slot]} calibrated`); break;
+				default: break;
+			}
+		};
+		link.listen();
+	}
+	refreshHud();
+
+	// ----------------------------------------------------------- snapshots
+	let seq = 0;
+	function sendSnapshots() {
+		if (!slots.some((s) => s.link.open)) return;
+		const buffer = encodeState({
+			seq: seq++, time: sim.time * 1000, mode: controller.modeIndex, phones: controller.phones,
+			flags: (slots[0].link.open ? 1 : 0) | (slots[1].link.open ? 2 : 0),
+			bodyPos: sim.pos, bodyQuat: sim.quat, bars: sim.bars, handlePos: sim.handlePos,
+			tension: sim.tension, tensionMax: sim.strings.map((x) => x.def.max * sim.ctl.stringGain || 1),
+			broken: sim.strings.map((x) => x.broken), ik: sim.ctl.ik, locks: sim.ctl.locks,
+		});
+		for (const s of slots) if (s.link.open) s.link.sendPacket(buffer);
+	}
+
+	// ---------------------------------------------------------- main loop
+	const nb = RIG.bodies.length;
+	const ipos = new Float32Array(nb * 3);
+	const iquat = new Float32Array(nb * 4);
+	const barPos = new Float32Array(RIG.bars.length * 3);
+	const barQuat = new Float32Array(RIG.bars.length * 4);
+	const tensionNorm = new Float32Array(64);
+	const snapEvery = Math.max(1, Math.round(sim.opts.hz / SNAPSHOT_HZ));
+	const maxSteps = Math.ceil(sim.opts.hz / 10);
+	const chest = sim.bodyIx.chest;
+	const fpsEl = $('#fps');
+	let last = performance.now();
+	let acc = 0, steps = 0, clock = 0, frames = 0, fpsAt = last, physMs = 0;
+
+	function frame(now) {
+		requestAnimationFrame(frame);
+		const dt = Math.min(0.1, (now - last) / 1000);
+		last = now;
+		clock += dt;
+		acc += dt;
+		const t0 = performance.now();
+		let n = 0;
+		while (acc >= sim.dt && n < maxSteps) {
+			controller.update();
+			sim.step();
+			acc -= sim.dt;
+			n++;
+			if (++steps % snapEvery === 0) sendSnapshots();
+		}
+		if (n === maxSteps) acc = 0;
+		physMs += performance.now() - t0;
+
+		// Render between the last two physics states.
+		const a = acc / sim.dt;
+		for (let i = 0; i < nb * 3; i++) ipos[i] = sim.prevPos[i] + (sim.pos[i] - sim.prevPos[i]) * a;
+		for (let i = 0; i < nb; i++) {
+			const o = i * 4;
+			const p = sim.prevQuat, q = sim.quat;
+			const sign = p[o] * q[o] + p[o + 1] * q[o + 1] + p[o + 2] * q[o + 2] + p[o + 3] * q[o + 3] < 0 ? -1 : 1;
+			let x = p[o] + (q[o] * sign - p[o]) * a, y = p[o + 1] + (q[o + 1] * sign - p[o + 1]) * a;
+			let z = p[o + 2] + (q[o + 2] * sign - p[o + 2]) * a, w = p[o + 3] + (q[o + 3] * sign - p[o + 3]) * a;
+			const l = Math.hypot(x, y, z, w) || 1;
+			iquat[o] = x / l; iquat[o + 1] = y / l; iquat[o + 2] = z / l; iquat[o + 3] = w / l;
+		}
+		posePuppet(puppet.parts, ipos, iquat);
+		sim.bars.forEach((bar, i) => { barPos.set(bar.pos, i * 3); barQuat.set(bar.quat, i * 4); });
+		rigView.update(barPos, barQuat, sim.handlePos);
+
+		if (shownStrings !== sim.strings) {
+			shownStrings = sim.strings;
+			strings.setStrings(sim.strings.map((s) => s.def));
+			strings.setResolution(stage.size[0] * stage.size[2], stage.size[1] * stage.size[2]);
+		}
+		let brokenMask = 0;
+		sim.strings.forEach((s, i) => { tensionNorm[i] = sim.tension[i] / s.def.max; if (s.broken) brokenMask |= 1 << i; });
+		strings.update(ipos, iquat, sim.handlePos, tensionNorm, brokenMask, clock, sim.ctl.pull);
+
+		stage.update(dt, clock, { x: ipos[chest * 3], y: ipos[chest * 3 + 1], z: ipos[chest * 3 + 2] });
+		stage.render(dt);
+		if (stage.adapt(dt * 1000)) resize();
+
+		frames++;
+		if (now - fpsAt > 1000) {
+			if (!fpsEl.hidden) fpsEl.textContent = `${Math.round((frames * 1000) / (now - fpsAt))} fps · physics ${(physMs / frames).toFixed(2)} ms · quality ${stage.quality}`;
+			frames = 0; fpsAt = now; physMs = 0;
+		}
+	}
+
+	window.addEventListener('keydown', (e) => {
+		if (e.target instanceof HTMLInputElement) return;
+		if (e.key === 'r') controller.reset();
+		if (e.key === 'q') { stage.setQuality((stage.quality + 2) % 3); resize(); toast(`Quality: ${['low', 'medium', 'high'][stage.quality]}`); }
+		if (e.key === 'd') fpsEl.hidden = !fpsEl.hidden;
+		if (e.key === 'f' && document.documentElement.requestFullscreen) {
+			if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {});
+		}
+	});
+
+	// Handy for the browser console and automated checks.
+	window.motionPuppet = { sim, controller, stage, slots, THREE };
+
+	stage.update(0.016, 0, { x: 0, y: 1.25, z: 0 });
+	stage.render(0.016);
+	requestAnimationFrame((now) => { last = now; frame(now); });
+	curtain.classList.add('is-open');
+}
+
+boot().catch((err) => {
+	console.error(err);
+	curtain.classList.add('is-error');
+	curtainText.textContent = /webgl|context/i.test(String(err && err.message))
+		? 'This browser could not start WebGL, which the stage needs. Try a recent Chrome, Edge, Firefox or Safari.'
+		: `The stage could not be set up: ${err && err.message ? err.message : err}`;
+});
