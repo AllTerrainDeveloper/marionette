@@ -71,6 +71,7 @@ export class PuppetSim {
 		this.handleVel = new Float32Array(rig.handles.length * 3);
 		this.time = 0;
 		this.resets = 0;
+		this.stringLoads = [];   // the strings' own weight on the parts they rest on (setStringLoads)
 		this.totalMass = rig.bodies.reduce((sum, b) => sum + b.mass, 0);
 
 		this.ctl = {
@@ -276,6 +277,7 @@ export class PuppetSim {
 		this.handleOff.forEach((o, i) => { o[0] = c.handleOffset[i][0]; o[1] = c.handleOffset[i][1]; o[2] = c.handleOffset[i][2]; });
 		this._placeHandles(0);
 		this._readBack(true);
+		this.stringLoads.length = 0;
 		this.resets++;
 	}
 
@@ -293,6 +295,7 @@ export class PuppetSim {
 		this._applyEffectorForces(dt);
 		this._applyBalance(dt);
 		this._applyImpulses();
+		this._applyStringLoads();
 
 		const forces = this.forces;
 		forces.length = 0;
@@ -717,6 +720,30 @@ export class PuppetSim {
 		const drag = (this.totalMass * 1.3 * amount * dt) / chest.mass;
 		chest.v[0] -= (chest.v[0] - bar[0]) * drag;
 		chest.v[2] -= (chest.v[2] - bar[2]) * drag;
+	}
+
+	/**
+	 * The weight of the strings on the parts they rest on or hang from, as the drawn strings
+	 * have it (StringsView.loads): [{ body, at: [world x, y, z], weight (N) }]. Each is held at
+	 * its place on its body and pressed down on it every step until the next call.
+	 */
+	setStringLoads(list) {
+		const loads = this.stringLoads;
+		loads.length = 0;
+		for (const { body, at, weight } of list) {
+			if (!this.bodies[body] || !(weight > 0)) continue;
+			const q = [this.quat[body * 4], this.quat[body * 4 + 1], this.quat[body * 4 + 2], this.quat[body * 4 + 3]];
+			loads.push({ body, local: M.qRot(M.qConj(q), [at[0] - this.pos[body * 3], at[1] - this.pos[body * 3 + 1], at[2] - this.pos[body * 3 + 2]]), weight: Math.min(weight, 2) });
+		}
+	}
+
+	_applyStringLoads() {
+		for (const { body, local, weight } of this.stringLoads) {
+			const b = this.bodies[body].body;
+			const q = [this.quat[body * 4], this.quat[body * 4 + 1], this.quat[body * 4 + 2], this.quat[body * 4 + 3]];
+			const at = M.qRot(q, local);
+			b.applyImpulse(0, -weight * this.dt, 0, this.pos[body * 3] + at[0], this.pos[body * 3 + 1] + at[1], this.pos[body * 3 + 2] + at[2]);
+		}
 	}
 
 	_applyImpulses() {

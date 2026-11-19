@@ -5,7 +5,7 @@
 import RAPIER from '../site/vendor/rapier.mjs';
 import { PuppetSim } from '../site/js/stage/sim.js';
 import { Controller } from '../site/js/stage/control.js';
-import { RIG } from '../site/js/shared/rig-config.js';
+import { RIG, STRING_WEIGHT } from '../site/js/shared/rig-config.js';
 import { wrapFrame, stringPath, distanceToSegment, pushOut } from '../site/js/shared/string-path.js';
 import { StringShape } from '../site/js/shared/string-shape.js';
 import * as M from '../site/js/shared/math.js';
@@ -180,6 +180,36 @@ function several(label, driveFrom, starts, options) {
 	const ownDeep = Math.max(...all.map((x) => x.ownDeep)), under = Math.max(...all.map((x) => x.under));
 	check('no string is inside the limb it is tied to (hanging or lying)', ownDeep < 0.005, `deepest ${(ownDeep * 1000).toFixed(1)} mm`);
 	check('no string is below the floor (hanging or lying)', under <= 0, `lowest ${(under * 1000).toFixed(1)} mm under`);
+}
+
+// 6. A string has weight, and it is on whatever holds the string up.
+{
+	const hang = (sim) => RIG.bars.forEach((b, k) => { sim.ctl.bars[k].pos = M.add(M.add(RIG.home, [0, 0.45, 0]), b.offset); sim.ctl.bars[k].quat = [0, 0, 0, 1]; });
+	const settle = (sim, seconds, each) => { for (let i = 0; i < sim.opts.hz * seconds; i++) { hang(sim); if (each) each(i); sim.step(); } };
+	const sim = new PuppetSim(RAPIER);
+	settle(sim, 8);
+	// Every string of a hanging puppet runs free from handle to tie: half of it hangs on each.
+	const frame = wrapFrame(sim.wrapProxies, sim.pos, sim.quat, []);
+	let carried = 0, whole = 0;
+	const loads = [], all = [];
+	sim.strings.forEach((s) => {
+		const route = stringPath(sim.handleAt(s.handle), sim.pointAt(s.body, s.at), frame, s.excluded).points;
+		let length = 0;
+		for (let k = 0; k < route.length - 1; k++) length += M.dist(route[k], route[k + 1]);
+		const shape = new StringShape();
+		shape.update(route, length, false, frame, s.excluded, 1 / 60, null, s.body);
+		shape.update(route, length, false, frame, s.excluded, 1 / 60, null, s.body);
+		carried += shape.loads(STRING_WEIGHT, s.body, false, loads);
+		all.push(...loads);
+		whole += STRING_WEIGHT * length;
+	});
+	check('a string hanging free puts half its weight on the part it is tied to', Math.abs(carried - whole / 2) < 0.02 * whole, `${(carried * 1000).toFixed(1)} mN of ${(whole * 1000).toFixed(1)} mN on the puppet, the rest on the handles`);
+	// And the simulation presses that weight on the part: the strings holding the puppet up carry it.
+	const pull = (s) => { let t = 0, count = 0; settle(s, 3, (i) => { if (i % 8 === 0) { t += s.tension.reduce((a, b) => a + b, 0); count++; } }); return t / count; };
+	const plain = pull(sim);
+	const foot = sim.bodyIx.footL;
+	const withLoad = (() => { let t = 0, count = 0; settle(sim, 4, (i) => { if (i % 4 === 0) sim.setStringLoads([{ body: foot, at: sim.bodyPos(foot), weight: 2 }]); if (i > sim.opts.hz && i % 8 === 0) { t += sim.tension.reduce((a, b) => a + b, 0); count++; } }); return t / count; })();
+	check('a weight resting on a part is carried by the strings that hold the part', withLoad - plain > 1 && withLoad - plain < 4, `2 N on a foot: the strings pull ${(withLoad - plain).toFixed(2)} N more (${plain.toFixed(1)} N -> ${withLoad.toFixed(1)} N)`);
 }
 
 console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');

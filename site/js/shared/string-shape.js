@@ -712,6 +712,66 @@ export class StringShape {
 		}
 	}
 
+	/**
+	 * What the string weighs on. A thread weighs next to nothing, but not nothing: every part
+	 * of the chain that rests on a piece is carried by that piece, and every part that hangs
+	 * free is carried, half each, by whatever holds it up at either side — the handle, the
+	 * floor, a piece it lies over, or the tie.
+	 *
+	 * @param perMetre  weight of the string per metre of its length (N/m)
+	 * @param ownBody   the body the string is tied to
+	 * @param broken    a snapped string hangs from its handle only
+	 * @param out       array to fill with { body, at: [x, y, z], weight } (N, downwards), one per
+	 *                  place on a body that carries some of it
+	 * @returns the weight carried by the bodies in `out` together (the rest is on the handle and the floor)
+	 */
+	loads(perMetre, ownBody, broken, out) {
+		out.length = 0;
+		if (!this.live || !(perMetre > 0)) return 0;
+		const { p, n, near } = this;
+		const HANDLE = -2, GROUND = -1, NOTHING = -3;
+		let total = 0, from = HANDLE, fromAt = 0, hanging = 0;
+		const give = (body, k, weight) => {
+			if (body < 0 || !(weight > 0)) return;
+			total += weight;
+			const last = out[out.length - 1];
+			if (last && last.body === body && last.k === k) { last.weight += weight; return; }
+			out.push({ body, k, at: [p[k * 3], p[k * 3 + 1], p[k * 3 + 2]], weight });
+		};
+		for (let k = 0; k <= n; k++) {
+			const o = k * 3;
+			const before = k > 0 ? Math.hypot(p[o] - p[o - 3], p[o + 1] - p[o - 2], p[o + 2] - p[o - 1]) : 0;
+			const after = k < n ? Math.hypot(p[o + 3] - p[o], p[o + 4] - p[o + 1], p[o + 5] - p[o + 2]) : 0;
+			const weight = perMetre * (before + after) / 2;
+			// What holds this point up, if anything.
+			let on = NOTHING;
+			if (k === 0) on = HANDLE;
+			else if (k === n && !broken) on = ownBody;
+			else if (p[o + 1] <= FLOOR + 0.002) on = GROUND;
+			else {
+				_point[0] = p[o]; _point[1] = p[o + 1]; _point[2] = p[o + 2];
+				for (let i = 0; i < near.length && on === NOTHING; i++) {
+					const f = near[i];
+					const ex = _point[0] - f.o[0], ey = _point[1] - f.o[1], ez = _point[2] - f.o[2];
+					const r = f.bound + TOUCH;
+					if (ex * ex + ey * ey + ez * ez > r * r) continue;
+					const exit = pushOut(f, _point, TOUCH);
+					if (!exit) continue;
+					// Resting on it, not hanging beside it: the way out of the wood is upwards.
+					const up = exit[1] - _point[1], away = Math.hypot(exit[0] - _point[0], up, exit[2] - _point[2]);
+					if (away > 1e-6 && up / away > 0.35) on = f.body;
+				}
+			}
+			if (on === NOTHING) { hanging += weight; continue; }
+			// The stretch that hung free up to here is shared between the two places holding it.
+			give(from, fromAt, hanging / 2);
+			give(on, k, hanging / 2 + weight);
+			hanging = 0; from = on; fromAt = k;
+		}
+		give(from, fromAt, hanging);   // a snapped string's free end
+		return total;
+	}
+
 	/** Remembers where every piece is, for the next update's sweep. */
 	_keep(pieces) {
 		if (this.was.length !== pieces.length * 7) this.was = new Float64Array(pieces.length * 7);

@@ -179,3 +179,10 @@ export function restHandle(handle, bars = BARS, home = RIG_HOME) {
 		home[2] + bar.offset[2] + handle.local[2],
 	];
 }
+
+/**
+ * What a string weighs, per metre of its length (N/m): a waxed cord of 6 g/m. Next to the
+ * puppet's parts that is very little — the whole of a slack string on a hand is a few
+ * hundredths of a newton — but a string that lies on a limb does press on it.
+ */
+export const STRING_WEIGHT = 0.006 * 9.81;

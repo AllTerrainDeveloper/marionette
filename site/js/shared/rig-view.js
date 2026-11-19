@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { BODIES, BARS, HANDLES, RIG_HOME } from './rig-config.js';
+import { BODIES, BARS, HANDLES, RIG_HOME, STRING_WEIGHT } from './rig-config.js';
 import { buildWrapProxies, effectiveAttach, stringExclusions, wrapFrame, stringPath } from './string-path.js';
 import { StringShape } from './string-shape.js';
 
@@ -142,6 +142,13 @@ export class StringsView {
 	 *                 these strings (the simulation), so that both go round the same limbs and
 	 *                 the physics learns from the drawn string what it is caught on
 	 */
+	/** What the strings weigh on, all of them together: [{ body, at: [x, y, z], weight }] (see StringShape.loads). */
+	loads(out = []) {
+		out.length = 0;
+		for (const item of this.items) if (item.loads && item.line.visible) for (const load of item.loads) out.push(load);
+		return out;
+	}
+
 	setStrings(defs, memories = null) {
 		this.memories = memories;
 		for (const item of this.items) {
@@ -208,6 +215,7 @@ export class StringsView {
 			const rest = Math.max(0.05, item.rest - (pulls ? pulls[i] || 0 : 0));
 			const t = tension[i] || 0;
 			const shape = item.shape.update(pts, rest, broken, frame, item.excluded, dt, item.memory, body);
+			item.shape.loads(STRING_WEIGHT, body, broken, item.loads || (item.loads = []));
 
 			const data = line.geometry.attributes.instanceStart.data;
 			const arr = data.array;
