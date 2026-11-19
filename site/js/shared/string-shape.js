@@ -551,6 +551,47 @@ export class StringShape {
 				if (!done) out.set(_held.subarray(0, out.length));
 			}
 		}
+		// The same for any other limb, anywhere along the string: a stretch the limiter has left
+		// cutting a piece stays where it was drawn a frame ago, or — if that piece has since
+		// moved onto that place — where the piece has carried it; whichever is clear of the
+		// wood and no leap.
+		if (near.length && !broken && this.posed) {
+			const free = n - 1;
+			for (let k = 0, fixed = 0; k < n && fixed < 4; k++) {
+				const hit = this._cutBy(out, k, near);
+				if (hit < 0) continue;
+				let c1 = k + 1;
+				while (c1 < n && this._cuts(out, c1, near)) c1++;
+				_held.set(out);
+				let done = false;
+				for (let widen = 0; widen <= 5 && !done; widen++) {
+					const from = Math.max(1, k - widen), to = Math.min(free, c1 + widen);
+					for (let carried = 0; carried < 2 && !done; carried++) {
+						if (carried) {
+							// ... as the piece it cuts would have carried it since last time.
+							const f = near[hit], w = this.nearIndex[hit] * 7, was = this.was;
+							if (w + 6 >= was.length) break;
+							_q[0] = -was[w + 3]; _q[1] = -was[w + 4]; _q[2] = -was[w + 5]; _q[3] = was[w + 6];
+							const turned = qMul(f.q, _q);
+							for (let e = from; e <= to; e++) {
+								const o = e * 3, u = e / n;
+								_v[0] = ref[o] - (ax + (bx - ax) * u) - was[w]; _v[1] = ref[o + 1] - (ay + (by - ay) * u) - was[w + 1]; _v[2] = ref[o + 2] - (az + (bz - az) * u) - was[w + 2];
+								const r = qRot(turned, _v);
+								out[o] = f.o[0] + r[0]; out[o + 1] = Math.max(FLOOR, f.o[1] + r[1]); out[o + 2] = f.o[2] + r[2];
+							}
+						} else for (let o = from * 3; o < (to + 1) * 3; o++) out[o] = ref[o];
+						let clear = true;
+						for (let e = Math.max(0, from - 1); e <= Math.min(n - 1, to) && clear; e++) clear = !this._cuts(out, e, near);
+						if (clear) {
+							const stayed = this._swing();
+							if (stayed <= most + SWING_SLOP) { swing = stayed; done = true; fixed++; }
+						}
+						if (!done) out.set(_held.subarray(0, out.length));
+					}
+				}
+				k = c1 - 1;
+			}
+		}
 		this.swing = swing;
 		out[0] = top[0]; out[1] = Math.max(FLOOR, top[1]); out[2] = top[2];
 		if (!broken) { out[n * 3] = end[0]; out[n * 3 + 1] = Math.max(FLOOR, end[1]); out[n * 3 + 2] = end[2]; }
@@ -662,6 +703,22 @@ export class StringShape {
 			if (!isClear(wood, _point, null, HEAL_DEPTH)) return true;
 		}
 		return false;
+	}
+
+	/** Which of `wood` link `k` of `points` cuts through (its index in `wood`), or -1. */
+	_cutBy(points, k, wood) {
+		const o = k * 3;
+		for (let part = k === 0 ? 1 : 0; part <= 3; part++) {
+			const u = part / 4;
+			_point[0] = points[o] + (points[o + 3] - points[o]) * u; _point[1] = points[o + 1] + (points[o + 4] - points[o + 1]) * u; _point[2] = points[o + 2] + (points[o + 5] - points[o + 2]) * u;
+			for (let i = 0; i < wood.length; i++) {
+				const f = wood[i];
+				const ex = _point[0] - f.o[0], ey = _point[1] - f.o[1], ez = _point[2] - f.o[2];
+				if (ex * ex + ey * ey + ez * ez > f.bound * f.bound) continue;
+				if (pushOut(f, _point, HEAL_DEPTH - 0.0015)) return i;
+			}
+		}
+		return -1;
 	}
 
 	/** Whether point `k` of `points` is clear of `wood`. */
