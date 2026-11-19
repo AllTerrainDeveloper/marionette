@@ -135,8 +135,9 @@ function several(label, driveFrom, starts, options) {
 	// A loose string following a swinging foot moves a centimetre or two a frame without
 	// jumping, and what is drawn may not leap at all (string-shape.js limits how fast its
 	// sideways movement can grow from one frame to the next).
-	check('strings do not jump in gentle play', r.snaps === 0 && r.worst < 0.05, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
-	check('nor pass through the puppet', r.ownDeep < 0.005 && r.otherShare < 0.0005, `own limb ${(r.ownShare * 100).toFixed(3)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
+	// (A string held back out of a limb catches up afterwards, with a run-up: up to five or six centimetres in a frame.)
+	check('strings do not jump in gentle play', r.snaps === 0 && r.worst < 0.07, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
+	check('nor pass through the puppet', r.ownDeep < 0.005 && r.otherShare < 0.0002, `own limb ${(r.ownShare * 100).toFixed(3)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
 	check('nor go below the floor', r.under <= 0 && r.resets === 0, `lowest ${(r.under * 1000).toFixed(1)} mm under`);
 }
 
@@ -154,7 +155,7 @@ function several(label, driveFrom, starts, options) {
 	// to that speed over a few frames; what it may not do, even now, is leap. Nor sit in the
 	// limb it is tied to; other limbs it still clips now and then.
 	check('strings do not jump even when the puppet is thrown about', r.snaps === 0, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
-	check('and are never in their own limb, rarely in another', r.ownDeep < 0.005 && r.otherShare < 0.003, `own limb: deepest ${(r.ownDeep * 1000).toFixed(1)} mm (never over 5), another part ${(r.otherShare * 100).toFixed(2)}% of string-frames`);
+	check('and are never in their own limb, rarely in another', r.ownDeep < 0.005 && r.otherShare < 0.001, `own limb: deepest ${(r.ownDeep * 1000).toFixed(1)} mm (never over 5), another part ${(r.otherShare * 100).toFixed(2)}% of string-frames`);
 	check('nor below the floor', r.under <= 0 && r.resets === 0, `lowest ${(r.under * 1000).toFixed(1)} mm under`);
 }
 
