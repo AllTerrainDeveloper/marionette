@@ -12,10 +12,11 @@
 
 import * as M from '../shared/math.js';
 import { RIG, LAYERS, indexById } from '../shared/rig-config.js';
+import { buildWrapProxies, stringExclusions, wrapFrame, stringPath } from '../shared/string-path.js';
 
 /** Default fixed timestep. Many small steps with few solver iterations beat few large steps with many. */
 export const DT = 1 / 240;
-export const DEFAULTS = { hz: 240, iterations: 5, stringPasses: 4, warmStart: 0.9 };
+export const DEFAULTS = { hz: 240, iterations: 5, stringPasses: 4, warmStart: 0.9, stringCollision: true };
 
 const ANG = [3, 4, 5]; // Rapier JointAxis.AngX / AngY / AngZ
 const MOTOR_ACCELERATION = 0;
@@ -61,6 +62,9 @@ export class PuppetSim {
 			impulses: [],
 		};
 
+		this.wrapProxies = buildWrapProxies(rig.bodies);
+		this._wrapFrame = [];
+		this._noBodies = [];
 		this._build();
 		this.setStrings(rig.strings);
 		this.reset();
@@ -176,7 +180,8 @@ export class PuppetSim {
 			const restHandle = M.add(M.add(rig.home, bar.offset), hdef.local);
 			const restAttach = M.add(rig.bodies[body].pos, def.at);
 			const rest = Number.isFinite(def.length) ? def.length : M.dist(restHandle, restAttach) + (def.slack || 0);
-			this.strings.push({ def, body, handle, rest, tension: 0, lambda: 0, broken: false, over: 0 });
+			const excluded = stringExclusions(def, rig.bodies, this.wrapProxies);
+			this.strings.push({ def, body, handle, rest, excluded, tension: 0, lambda: 0, broken: false, over: 0, path: null });
 		}
 		this.tension = new Float32Array(this.strings.length);
 	}
@@ -279,16 +284,16 @@ export class PuppetSim {
 		];
 	}
 
-	/** Inverse effective mass of a body at offset r from its centre, along unit direction n. */
+	/** Inverse effective mass of a body at offset r from its centre, for an impulse along g (need not be unit length). */
 	_invMassAt(i, r, n) {
 		const b = this.bodies[i];
 		const q = this.bodyQuat(i);
 		const local = M.qRot(M.qConj(q), M.cross(r, n));
-		return b.invMass + local[0] * local[0] * b.invInertia[0] + local[1] * local[1] * b.invInertia[1] + local[2] * local[2] * b.invInertia[2];
+		return b.invMass * M.dot(n, n) + local[0] * local[0] * b.invInertia[0] + local[1] * local[1] * b.invInertia[1] + local[2] * local[2] * b.invInertia[2];
 	}
 
 	/**
-	 * Tension-only strings as soft unilateral distance constraints.
+	 * Tension-only strings as soft unilateral length constraints.
 	 *
 	 * Each string keeps an accumulated impulse (its dual variable) that is warm
 	 * started from the previous step and refined over a few Gauss-Seidel passes,
@@ -298,51 +303,75 @@ export class PuppetSim {
 	 * coefficients, so it layers on Rapier's own substepping (TGS-soft) solver.
 	 * A slack string gets a speculative bound instead, so it comes taut without a
 	 * one-step snap.
+	 *
+	 * Strings collide with the puppet. A string is a polyline handle -> via points
+	 * -> attachment, where each via point rests on the surface of a limb the
+	 * straight line would have cut through (string-path.js). The constraint is on
+	 * the polyline's total length, and a via point is a frictionless pulley: with
+	 * unit directions d[i] along the segments, tension T pulls the attachment back
+	 * along the last segment and presses on each wrapped limb with
+	 * T * (d[i] - d[i-1]). So a limb deflects the string, and the string pushes
+	 * the limb.
 	 */
 	_applyStrings(dt) {
 		const c = this.ctl;
 		const gain = c.stringGain;
-		const { stringPasses, warmStart } = this.opts;
+		const { stringPasses, warmStart, stringCollision } = this.opts;
 		const active = this._active || (this._active = []);
 		active.length = 0;
+		const frame = stringCollision ? wrapFrame(this.wrapProxies, this.pos, this.quat, this._wrapFrame) : this._noBodies;
 
 		this.strings.forEach((s, i) => {
 			s.tension = 0;
 			this.tension[i] = 0;
+			s.path = null;
 			if (!s.def.enabled || s.broken || gain < 0.001) { s.lambda = 0; return; }
-			const centre = this.bodyPos(s.body);
-			const r = M.qRot(this.bodyQuat(s.body), s.def.at);
-			const p = M.add(centre, r);
-			const h = this.handleAt(s.handle);
-			const d = M.dist(h, p);
-			if (d < 1e-6) { s.lambda = 0; return; }
-			const n = M.scale(M.sub(h, p), 1 / d);
+			const attach = M.add(this.bodyPos(s.body), M.qRot(this.bodyQuat(s.body), s.def.at));
+			const path = stringPath(this.handleAt(s.handle), attach, frame, s.excluded);
+			if (path.length < 1e-6) { s.lambda = 0; return; }
+			s.path = path;
+
+			// Per moving point on the path: the body it sits on, its lever arm, and the
+			// direction g an impulse of unit tension pushes it in.
+			const pts = path.points;
+			const n = pts.length - 1;
+			const dirs = [];
+			for (let k = 0; k < n; k++) dirs.push(M.norm(M.sub(pts[k + 1], pts[k])));
+			const nodes = [];
+			let w = 0;
+			for (let k = 1; k <= n; k++) {
+				const body = k === n ? s.body : path.bodies[k];
+				const g = k === n ? M.scale(dirs[n - 1], -1) : M.sub(dirs[k], dirs[k - 1]);
+				const r = M.sub(pts[k], this.bodyPos(body));
+				nodes.push({ body: this.bodies[body].body, p: pts[k], r, g });
+				w += this._invMassAt(body, r, g);
+			}
 			const j = s.handle * 3;
 			const k = s.def.k * gain;
 			const soft = s.def.c * gain + dt * k;
-			s.i = i; s.r = r; s.p = p; s.n = n;
-			s.vh = [this.handleVel[j], this.handleVel[j + 1], this.handleVel[j + 2]];
-			s.w = this._invMassAt(s.body, r, n);
+			s.i = i; s.nodes = nodes; s.w = w;
+			// How fast the handle alone is lengthening the string.
+			s.handleRate = -(this.handleVel[j] * dirs[0][0] + this.handleVel[j + 1] * dirs[0][1] + this.handleVel[j + 2] * dirs[0][2]);
 			s.gamma = 1 / (dt * soft);
 			s.maxImpulse = s.def.max * gain * dt;
-			const stretch = d - Math.max(0.05, s.rest - c.pull[i]);
+			const stretch = path.length - Math.max(0.05, s.rest - c.pull[i]);
 			// Taut: pull back with the spring's bias. Slack: only stop it overshooting its length this step.
 			s.bias = stretch > 0 ? (((dt * k) / soft) * stretch) / dt : stretch / dt;
 			s.acc = 0;
 			if (stretch > 0 && warmStart > 0 && s.lambda > 0) {
 				s.acc = Math.min(s.lambda * warmStart, s.maxImpulse);
-				this.bodies[s.body].body.applyImpulseAtPoint(xyz(M.scale(n, s.acc)), xyz(p), true);
+				for (const node of nodes) node.body.applyImpulseAtPoint(xyz(M.scale(node.g, s.acc)), xyz(node.p), true);
 			}
 			active.push(s);
 		});
 
 		for (let pass = 0; pass < stringPasses; pass++) {
 			for (const s of active) {
-				const body = this.bodies[s.body].body;
-				const lengthening = M.dot(M.sub(s.vh, this._pointVel(body, s.r)), s.n);
+				let lengthening = s.handleRate;
+				for (const node of s.nodes) lengthening -= M.dot(this._pointVel(node.body, node.r), node.g);
 				const next = M.clamp(s.acc + (lengthening + s.bias - s.gamma * s.acc) / (s.w + s.gamma), 0, s.maxImpulse);
 				const delta = next - s.acc;
-				if (delta !== 0) body.applyImpulseAtPoint(xyz(M.scale(s.n, delta)), xyz(s.p), true);
+				if (delta !== 0) for (const node of s.nodes) node.body.applyImpulseAtPoint(xyz(M.scale(node.g, delta)), xyz(node.p), true);
 				s.acc = next;
 			}
 		}

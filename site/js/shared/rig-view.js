@@ -7,6 +7,7 @@ import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { BODIES, BARS, HANDLES, RIG_HOME } from './rig-config.js';
+import { buildWrapProxies, stringExclusions, wrapFrame, stringPath } from './string-path.js';
 
 const SEGMENTS = 14;
 const _a = new THREE.Vector3();
@@ -125,6 +126,8 @@ export class StringsView {
 		this.group = new THREE.Group();
 		this.items = [];
 		this.resolution = new THREE.Vector2(1024, 768);
+		this.proxies = buildWrapProxies(BODIES);
+		this.frame = [];
 	}
 
 	setResolution(w, h) {
@@ -161,7 +164,7 @@ export class StringsView {
 				eye.rotation.y = Math.PI / 2;
 				this.opts.parts[body].add(eye);
 			}
-			this.items.push({ def, body, handle, line, eye, rest: stringRestLength(def), attach: new THREE.Vector3(), top: new THREE.Vector3(), highlight: 0 });
+			this.items.push({ def, body, handle, line, eye, rest: stringRestLength(def), excluded: stringExclusions(def, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null });
 		}
 	}
 
@@ -171,6 +174,8 @@ export class StringsView {
 	 * pulls: optional metres of pull per string, selected: optional Set of indices.
 	 */
 	update(pos, quat, handlePos, tension, brokenMask, time, pulls, selected) {
+		// Route every string around the limbs exactly as the simulation does.
+		wrapFrame(this.proxies, pos, quat, this.frame);
 		this.items.forEach((item, i) => {
 			const { def, body, handle, line } = item;
 			const broken = !!(brokenMask & (1 << i));
@@ -182,32 +187,64 @@ export class StringsView {
 			_b.set(handlePos[handle * 3], handlePos[handle * 3 + 1], handlePos[handle * 3 + 2]);
 			item.attach.copy(_a); item.top.copy(_b);
 
-			const d = _a.distanceTo(_b);
+			const path = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], this.frame, item.excluded);
+			const pts = path.points;
+			item.points = pts;
 			const rest = Math.max(0.05, item.rest - (pulls ? pulls[i] || 0 : 0));
 			const t = tension[i] || 0;
-			// Slack string: hang in a shallow arc (parabola approximating a catenary) and sway a little.
+
+			// Share the line's vertices between the path's legs by length, so every via point is a vertex.
+			const legs = pts.length - 1;
+			const legLen = [];
+			let longest = 0;
+			for (let k = 0; k < legs; k++) {
+				legLen.push(Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1], pts[k + 1][2] - pts[k][2]));
+				if (legLen[k] > legLen[longest]) longest = k;
+			}
+			const share = legLen.map((l) => Math.max(1, Math.round((l / (path.length || 1)) * SEGMENTS)));
+			let spare = SEGMENTS - share.reduce((a, b) => a + b, 0);
+			share[longest] = Math.max(1, share[longest] + spare);
+			spare = SEGMENTS - share.reduce((a, b) => a + b, 0);
+			for (let k = 0; spare < 0 && k < legs; k++) if (share[k] > 1) { share[k]--; spare++; }
+
+			// Slack string: the spare length hangs in a shallow arc (a parabola approximating
+			// a catenary) on its longest leg, and sways a little.
 			let sag = 0;
 			if (broken) sag = 0.35;
-			else if (d < rest && t < 0.004) sag = Math.sqrt(Math.max(0, (3 * d * (rest - d)) / 8));
+			else if (path.length < rest && t < 0.004) sag = Math.sqrt(Math.max(0, (3 * legLen[longest] * (rest - path.length)) / 8));
 			const sway = sag * 0.18;
 			const data = line.geometry.attributes.instanceStart.data;
 			const arr = data.array;
-			let px = 0, py = 0, pz = 0;
-			for (let k = 0; k <= SEGMENTS; k++) {
-				const u = k / SEGMENTS;
-				const bell = 4 * u * (1 - u);
-				let x = _b.x + (_a.x - _b.x) * u;
-				let y = _b.y + (_a.y - _b.y) * u - sag * bell;
-				let z = _b.z + (_a.z - _b.z) * u;
-				if (broken) { x = _b.x + Math.sin(time * 2 + i) * 0.02 * u; z = _b.z; y = _b.y - Math.min(rest, 0.7) * u; }
-				x += Math.sin(time * 1.7 + i * 2.1 + u * 3) * sway * bell;
-				z += Math.cos(time * 1.3 + i * 1.3 + u * 2) * sway * bell;
-				if (k > 0) {
-					const o = (k - 1) * 6;
-					arr[o] = px; arr[o + 1] = py; arr[o + 2] = pz;
-					arr[o + 3] = x; arr[o + 4] = y; arr[o + 5] = z;
+			let px = pts[0][0], py = pts[0][1], pz = pts[0][2];
+			let v = 0;
+			const put = (x, y, z) => {
+				const o = v * 6;
+				arr[o] = px; arr[o + 1] = py; arr[o + 2] = pz;
+				arr[o + 3] = x; arr[o + 4] = y; arr[o + 5] = z;
+				px = x; py = y; pz = z; v++;
+			};
+			if (broken) {
+				// A snapped string just hangs from its handle.
+				for (let k = 1; k <= SEGMENTS; k++) {
+					const u = k / SEGMENTS;
+					put(_b.x + Math.sin(time * 2 + i) * 0.02 * u, _b.y - Math.min(rest, 0.7) * u, _b.z);
 				}
-				px = x; py = y; pz = z;
+			} else {
+				for (let k = 0; k < legs; k++) {
+					const p = pts[k], q = pts[k + 1];
+					for (let m = 1; m <= share[k] && v < SEGMENTS; m++) {
+						const u = m / share[k];
+						let x = p[0] + (q[0] - p[0]) * u, y = p[1] + (q[1] - p[1]) * u, z = p[2] + (q[2] - p[2]) * u;
+						if (k === longest && sag > 0) {
+							const bell = 4 * u * (1 - u);
+							y -= sag * bell;
+							x += Math.sin(time * 1.7 + i * 2.1 + u * 3) * sway * bell;
+							z += Math.cos(time * 1.3 + i * 1.3 + u * 2) * sway * bell;
+						}
+						put(x, y, z);
+					}
+				}
+				while (v < SEGMENTS) put(_a.x, _a.y, _a.z);
 			}
 			data.needsUpdate = true;
 

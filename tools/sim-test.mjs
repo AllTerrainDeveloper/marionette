@@ -3,6 +3,7 @@ import RAPIER from '../site/vendor/rapier.mjs';
 import { PuppetSim } from '../site/js/stage/sim.js';
 import { RIG } from '../site/js/shared/rig-config.js';
 import * as M from '../site/js/shared/math.js';
+import { wrapFrame, pathPenetration } from '../site/js/shared/string-path.js';
 
 await RAPIER.init();
 const sim = new PuppetSim(RAPIER);
@@ -96,11 +97,46 @@ sim.ctl.ik[e].w = 0;
 
 // 8. Slack everything: collapse to the floor without exploding.
 sim.ctl.stringGain = 0; sim.ctl.balance = 0; sim.ctl.tone = { spine: 0.3, head: 0.3, arms: 0.3, legs: 0.3 };
-const maxDrop = run(5); report('dropped');
-check('collapses calmly when dropped', speedNow() < 0.3 && sim.bodyPos(ix.chest)[1] < 0.6 && sim.bodyPos(ix.chest)[1] > 0.03, `chest y ${sim.bodyPos(ix.chest)[1].toFixed(3)} peak ${maxDrop.toFixed(1)}`);
+const maxDrop = run(9); report('dropped');
+check('collapses calmly when dropped', speedNow() < 0.3 && sim.bodyPos(ix.chest)[1] < 0.6 && sim.bodyPos(ix.chest)[1] > 0.03, `chest y ${sim.bodyPos(ix.chest)[1].toFixed(3)} speed ${speedNow().toFixed(2)} peak ${maxDrop.toFixed(1)}`);
 sim.ctl.stringGain = 1; sim.ctl.tone = { spine: 1, head: 1, arms: 1, legs: 1 };
 run(6); report('re-strung');
 check('stands back up when re-strung', sim.bodyPos(ix.head)[1] > 1.4, `head y ${sim.bodyPos(ix.head)[1].toFixed(3)}`);
+
+// 9. Strings collide with the puppet: fold it up under a low, tilted bar so strings
+//    must cross limbs, then compare how deep they cut with collisions on and off.
+{
+	const scenario = (opts) => {
+		const s2 = new PuppetSim(RAPIER, RIG, opts);
+		const frame = [];
+		let cut = 0, worst = 0, steps = 0, wrapped = 0;
+		const total = Math.round(14 / s2.dt);
+		for (let i = 0; i < total; i++) {
+			const t = i * s2.dt;
+			const q = M.qFromYPR(Math.sin(t * 0.9) * 1.6, 0.75 * Math.sin(t * 1.3), 0.7 * Math.sin(t * 1.1 + 1));
+			RIG.bars.forEach((b, k) => { s2.ctl.bars[k].pos = M.add(M.add(RIG.home, [0.25 * Math.sin(t * 0.7), -0.45 + 0.25 * Math.sin(t * 1.7), 0.2 * Math.cos(t * 0.8)]), M.qRot(q, b.offset)); s2.ctl.bars[k].quat = q; });
+			s2.ctl.pull[4] = 0.4 + 0.3 * Math.sin(t * 2.1); s2.ctl.pull[7] = 0.35 + 0.3 * Math.sin(t * 1.6);
+			s2.step();
+			if (i % 4) continue;
+			wrapFrame(s2.wrapProxies, s2.pos, s2.quat, frame);
+			let deepest = 0;
+			for (const st of s2.strings) {
+				if (!st.path || st.tension <= 0) continue;                       // only taut strings count
+				deepest = Math.max(deepest, pathPenetration(st.path.points, frame, st.excluded));
+				if (st.path.points.length > 2) wrapped++;
+			}
+			steps++; worst = Math.max(worst, deepest); if (deepest > 0.01) cut++;
+		}
+		return { cut: cut / steps, worst, wrapped, resets: s2.resets - 1, joints: Math.max(...s2.joints.map((j) => M.dist(s2.pointAt(j.a, j.anchorA), s2.pointAt(j.b, j.anchorB)))) };
+	};
+	const off = scenario({ stringCollision: false });
+	const on = scenario({ stringCollision: true });
+	console.log(`  [string collisions] off: taut strings cut >1 cm into a limb ${(off.cut * 100).toFixed(1)}% of the time, deepest ${(off.worst * 100).toFixed(1)} cm`);
+	console.log(`  [string collisions]  on: ${(on.cut * 100).toFixed(1)}% of the time, deepest ${(on.worst * 100).toFixed(1)} cm, ${on.wrapped} wrapped samples`);
+	check('scenario really makes strings cross limbs', off.cut > 0.1, `${(off.cut * 100).toFixed(1)}% without collisions`);
+	check('strings wrap around limbs instead of cutting through', on.wrapped > 50 && on.cut < off.cut * 0.25, `${(on.cut * 100).toFixed(1)}% vs ${(off.cut * 100).toFixed(1)}%`);
+	check('wrapping stays stable', on.resets === 0 && on.joints < 0.05, `resets ${on.resets}, worst joint gap ${(on.joints * 1000).toFixed(1)} mm`);
+}
 
 // Timing.
 const t0 = performance.now(); run(5); const ms = (performance.now() - t0) / (5 / DT);

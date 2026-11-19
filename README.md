@@ -25,6 +25,7 @@ Stage keys: `d` stats · `q` quality · `r` reset · `f` fullscreen.
 | `site/js/shared/rig-config.js` | The puppet as data: 19 bodies, 18 joints (limits, tone, torque), 2 control bars, 12 handles, 12 strings, 4 IK effectors. |
 | `site/js/shared/modes.js` | The six control configurations and the Custom Rig JSON schema. |
 | `site/js/shared/mapping.js` | Motion mapping engine (sensitivity, dead zone, smoothing, curve, clamp, invert). |
+| `site/js/shared/string-path.js` | String-versus-limb collision: routes a string over the surface of any body it would cut through. Shared by the simulation and both renderers. |
 | `site/js/shared/protocol.js` | Binary packets for the unreliable channel, JSON for the reliable one. |
 | `site/js/shared/net.js` | Signaling client and WebRTC link (two data channels). |
 | `site/js/stage/sim.js` | Rapier world, tension-only strings, IK, balance, safety guards. |
@@ -42,6 +43,7 @@ Connectivity: STUN only. Devices on the same Wi-Fi connect directly; some carrie
 
 - Rapier's solver is already a small-steps / TGS-soft solver, so the simulation takes many small steps (240 Hz × 5 iterations) rather than few large ones.
 - Strings are unilateral soft distance constraints solved outside Rapier. Each keeps an accumulated impulse that is warm started and refined over four Gauss–Seidel passes, clamped to `[0, max tension]` — the accumulated dual update of *Augmented Vertex Block Descent* (Giles, Diaz, Yuksel, SIGGRAPH 2025) in velocity form with Catto's soft-constraint coefficients.
+- Strings collide with the puppet. Each body has a capsule proxy; where a string's straight line would pass through one, a via point is placed on its surface at the point of closest approach and the string becomes a polyline through it. The constraint is on the polyline's total length and each via point acts as a frictionless pulley, so a limb deflects the string and the string presses on the limb. Limits: one contact point per limb (not a full geodesic wrap), no friction, strings do not collide with each other or with the control bars, and a limb moving faster than its own thickness per step can pass through a string.
 - Joint locks narrow the joint limits to the current pose (a hard stop, not a stiff spring).
 
 ## Tests (Node 22+)
