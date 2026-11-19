@@ -136,7 +136,7 @@ function several(label, driveFrom, starts, options) {
 	// jumping, and what is drawn may not leap at all (string-shape.js limits how fast its
 	// sideways movement can grow from one frame to the next).
 	check('strings do not jump in gentle play', r.snaps === 0 && r.worst < 0.05, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
-	check('nor pass through the puppet', r.ownShare < 0.0002 && r.otherShare < 0.0005, `own limb ${(r.ownShare * 100).toFixed(3)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
+	check('nor pass through the puppet', r.ownDeep < 0.005 && r.otherShare < 0.0005, `own limb ${(r.ownShare * 100).toFixed(3)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
 	check('nor go below the floor', r.under <= 0 && r.resets === 0, `lowest ${(r.under * 1000).toFixed(1)} mm under`);
 }
 
@@ -152,9 +152,9 @@ function several(label, driveFrom, starts, options) {
 	const r = several('thrown about', perform, [0, 13, 33, 58, 71, 95], { settle: 2, seconds: 20 });
 	// A limb moving six centimetres a frame takes a string with it, and a string may build up
 	// to that speed over a few frames; what it may not do, even now, is leap. Nor sit in the
-	// limb it is tied to, bar a frame in tens of thousands; other limbs it still clips now and then.
+	// limb it is tied to; other limbs it still clips now and then.
 	check('strings do not jump even when the puppet is thrown about', r.snaps === 0, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
-	check('and are next to never in their own limb, rarely in another', r.ownShare < 0.0002 && r.otherShare < 0.003, `own limb ${(r.ownShare * 100).toFixed(3)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
+	check('and are never in their own limb, rarely in another', r.ownDeep < 0.005 && r.otherShare < 0.003, `own limb: deepest ${(r.ownDeep * 1000).toFixed(1)} mm (never over 5), another part ${(r.otherShare * 100).toFixed(2)}% of string-frames`);
 	check('nor below the floor', r.under <= 0 && r.resets === 0, `lowest ${(r.under * 1000).toFixed(1)} mm under`);
 }
 

@@ -46,6 +46,7 @@ const TURN_SLACK = 0.05;           // spare length (m) from which it does so ful
 const HEAL_DEPTH = -0.0005;        // how far into its own limb (m, negative) the end of a string may cut before it is laid round it ...
 const HEAL_REACH = 0.06;           // ... and the furthest sideways (m) that may move a point; beyond it the easing has to do
 const STEADY = 0.0199;              // sideways movement per frame (m) that needs no run-up ...
+const SWING_SLOP = 0.00005;         // rounding allowed when movement is compared with what the limiter allows (m)
 const GROW = 2.4;                  // ... and how many times last frame's movement is allowed beyond that
 const CATCH_UP = 0.5;              // share of the gap to the chain that what is drawn closes per frame when it is far behind
 const PINCH = -0.0015;             // a string squeezed between two pieces may be this close to the wood (m; negative: a touch inside, where two limbs press together)
@@ -512,14 +513,14 @@ export class StringShape {
 			if (near.length && this._heal(out, null, DRAWN_MARGIN, HEAL_REACH, near, 0)) again = true;
 			if (again) {
 				swing = this._swing();
-				if (swing > most) {
+				if (swing > most + SWING_SLOP) {
 					// Too far for one frame: as much of the way there as is not a leap.
 					_there.set(out);
 					let lo = 0, hi = 1;
 					for (let step = 0; step < 5; step++) {
 						const t = (lo + hi) / 2;
 						for (let k = 3; k < n * 3; k++) out[k] = _held[k] + (_there[k] - _held[k]) * t;
-						if (this._swing() > most) hi = t; else lo = t;
+						if (this._swing() > most + SWING_SLOP) hi = t; else lo = t;
 					}
 					for (let k = 3; k < n * 3; k++) out[k] = _held[k] + (_there[k] - _held[k]) * lo;
 					swing = this._swing();
@@ -543,8 +544,7 @@ export class StringShape {
 					for (let k = first; k < n && clear; k++) clear = !this._cuts(out, k, own);
 					if (clear) {
 						const stayed = this._swing();
-						if (stayed <= most) { swing = stayed; done = true; }
-						else break;   // wider only turns it further
+						if (stayed <= most + SWING_SLOP) { swing = stayed; done = true; }
 					}
 					if (from === this.rigidFrom && to === n - 1) break;
 				}
