@@ -88,7 +88,7 @@ const fromPiece = (f, u) => add(f.o, qRot(f.q, [u[0] * f.scale[0], u[1] * f.scal
  * alongside a limb, or straight down through the torso — cases a closest-approach-to-
  * the-axis test misses, because there the axis distance says nothing about the bulge.
  */
-function legHit(f, p, q, margin) {
+function legHit(f, p, q, margin, hint) {
 	const P = toPiece(f, p), Q = toPiece(f, q);
 	const dx = Q[0] - P[0], dy = Q[1] - P[1], dz = Q[2] - P[2];
 	let s0 = 0, s1 = 1;
@@ -144,7 +144,10 @@ function legHit(f, p, q, margin) {
 		const l = Math.hypot(dx, dz);
 		if (l > 1e-6) { nx = dz / l; nz = -dx / l; } else { nx = 0; nz = 1; }
 	}
-	return { s, depth, point: fromPiece(f, [nx * reach, cy, nz * reach]) };
+	// A string that already lies on one side of this piece stays on that side: it has to
+	// slide round the wood, it cannot jump through to the far side.
+	if (hint && nx * hint[0] + nz * hint[1] < 0) { nx = hint[0]; nz = hint[1]; }
+	return { s, depth, point: fromPiece(f, [nx * reach, cy, nz * reach]), dir: [nx, nz] };
 }
 
 /**
@@ -224,11 +227,15 @@ export function stringExclusions(def, at, bodies, proxies) {
  * Routes a string from `from` (handle) to `to` (attachment) around the pieces in `frame`.
  * Returns { points, bodies, length }: points[0] is the handle, the last is the attachment,
  * anything between is a via point resting on body `bodies[i]` (-1 for the two ends).
+ *
+ * `memory` (a Map kept per string by the caller) remembers which side of each piece the
+ * string passed last time, so the route moves continuously instead of flipping sides.
  */
-export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN) {
+export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN, memory = null) {
 	const points = [from, to];
 	const bodies = [-1, -1];
 	let counts = null;
+	let sides = null;
 	for (let n = 0; n < MAX_VIAS; n++) {
 		let best = null;
 		for (let i = 0; i < points.length - 1; i++) {
@@ -240,11 +247,11 @@ export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN) {
 				const seen = counts ? counts[k] || 0 : 0;
 				if (seen >= MAX_PER_PIECE || (excluded && excluded.has(k))) continue;
 				if (pointSegDist(f.o, p, q) > f.bound + margin) continue;
-				const hit = legHit(f, p, q, margin);
+				const hit = legHit(f, p, q, margin, memory && !seen ? memory.get(k) : undefined);
 				if (!hit || hit.depth <= (seen ? REWRAP_DEPTH : 0) || (best && hit.depth <= best.depth)) continue;
 				// A leg end sitting in or on a piece cannot be fixed by bending the leg there.
 				if (hit.s * segLen < END_CLEARANCE || (1 - hit.s) * segLen < END_CLEARANCE) continue;
-				best = { depth: hit.depth, at: i + 1, piece: k, body: f.body, point: hit.point };
+				best = { depth: hit.depth, at: i + 1, piece: k, body: f.body, point: hit.point, dir: seen ? null : hit.dir };
 			}
 		}
 		if (!best) break;
@@ -252,6 +259,11 @@ export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN) {
 		bodies.splice(best.at, 0, best.body);
 		counts = counts || {};
 		counts[best.piece] = (counts[best.piece] || 0) + 1;
+		if (best.dir) (sides || (sides = new Map())).set(best.piece, best.dir);
+	}
+	if (memory) {
+		memory.clear();
+		if (sides) for (const [k, dir] of sides) memory.set(k, dir);
 	}
 	let length = 0;
 	for (let i = 0; i < points.length - 1; i++) length += len(sub(points[i + 1], points[i]));

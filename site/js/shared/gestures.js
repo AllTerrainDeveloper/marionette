@@ -44,7 +44,8 @@ function wave(add, side, w, t, ik) {
 
 // A marionette's neck is close to limp, so its motors alone turn the head far too slowly to read.
 const HEAD = BODIES.find((b) => b.id === 'head');
-const HEAD_INERTIA = 0.4 * HEAD.mass * HEAD.size[0] ** 2;
+const HEAD_RADIUS = 0.115;   // the skull's radius in puppet-shapes.js
+const HEAD_INERTIA = 0.4 * HEAD.mass * HEAD_RADIUS ** 2;
 
 /**
  * Turns the head to `yawAt(u)` (radians, + = towards the puppet's left): the neck motors get the

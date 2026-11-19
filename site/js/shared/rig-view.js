@@ -9,7 +9,9 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { BODIES, BARS, HANDLES, RIG_HOME } from './rig-config.js';
 import { buildWrapProxies, effectiveAttach, stringExclusions, wrapFrame, stringPath } from './string-path.js';
 
-const SEGMENTS = 14;
+const SEGMENTS = 28;
+const ROPE_PASSES = 14;         // relaxation sweeps per frame for a hanging string
+const GRAVITY = 9.81;
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
 const _q = new THREE.Quaternion();
@@ -38,7 +40,7 @@ export class RigView {
 			const beam = (w, d, x, z) => {
 				const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, 0.02, d), wood);
 				mesh.position.set(x, 0, z);
-				mesh.castShadow = !opts.ghost;
+				mesh.castShadow = false;   // the control bars hang above the lights: no shadows on the stage
 				g.add(mesh);
 			};
 			if (z1 - z0 > 0.08) beam(0.036, z1 - z0, 0, (z0 + z1) / 2);
@@ -68,7 +70,7 @@ export class RigView {
 					? new THREE.MeshStandardMaterial({ color: 0xffd58a, emissive: 0x6b4a12, roughness: 0.35 })
 					: opts.materials.brass
 			);
-			knob.castShadow = !opts.ghost;
+			knob.castShadow = false;
 			this.group.add(knob);
 			this.knobs.push(knob);
 			// A short wire from the bar to a knob that has been pulled away from it.
@@ -167,88 +169,126 @@ export class StringsView {
 				eye.rotation.y = Math.PI / 2;
 				this.opts.parts[body].add(eye);
 			}
-			this.items.push({ def, body, handle, line, eye, tie, rest: stringRestLength(def, tie), excluded: stringExclusions(def, tie, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null });
+			this.items.push({ def, body, handle, line, eye, tie, rest: stringRestLength(def, tie), excluded: stringExclusions(def, tie, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null, memory: new Map(), rope: new Float32Array((SEGMENTS + 1) * 3), last: new Float32Array((SEGMENTS + 1) * 3), live: false });
 		}
 	}
 
 	/**
 	 * pos / quat: body transforms, handlePos: handle positions,
 	 * tension: 0..1 per string (fraction of its maximum), brokenMask: bit per string,
-	 * pulls: optional metres of pull per string, selected: optional Set of indices.
+	 * pulls: optional metres of pull per string, selected: optional Set of indices,
+	 * paths: optional per-string routes from the simulation ([[x, y, z], ...], handle first).
+	 *
+	 * A taut string is drawn along its route. A slack one is a little rope of its own:
+	 * a chain of points with the string's full length, pinned at both ends, that hangs,
+	 * swings and folds under gravity. A snapped one is pinned at the handle only.
 	 */
-	update(pos, quat, handlePos, tension, brokenMask, time, pulls, selected) {
+	update(pos, quat, handlePos, tension, brokenMask, time, pulls, selected, paths) {
 		// Route every string around the limbs exactly as the simulation does.
 		// (`wrap = false` draws plain straight strings — debug mode uses it to compare.)
 		const frame = this.wrap === false ? NO_PIECES : wrapFrame(this.proxies, pos, quat, this.frame);
+		const dt = Math.min(1 / 30, Math.max(0, time - (this.lastTime ?? time)));
+		this.lastTime = time;
+		const N = SEGMENTS;
 		this.items.forEach((item, i) => {
-			const { def, body, handle, line } = item;
+			const { def, body, handle, line, rope, last } = item;
 			const broken = !!(brokenMask & (1 << i));
 			line.visible = def.enabled !== false;
-			if (!line.visible) return;
+			if (!line.visible) { item.live = false; return; }
 			_q.set(quat[body * 4], quat[body * 4 + 1], quat[body * 4 + 2], quat[body * 4 + 3]);
 			_a.set(item.tie[0], item.tie[1], item.tie[2]).applyQuaternion(_q);
 			_a.set(_a.x + pos[body * 3], _a.y + pos[body * 3 + 1], _a.z + pos[body * 3 + 2]);
 			_b.set(handlePos[handle * 3], handlePos[handle * 3 + 1], handlePos[handle * 3 + 2]);
 			item.attach.copy(_a); item.top.copy(_b);
 
-			const path = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], frame, item.excluded);
-			const pts = path.points;
+			// The route: from the simulation when it is given (its via points, our interpolated ends), else our own.
+			let pts;
+			const given = this.wrap !== false && paths && paths[i];
+			if (given && given.length >= 2) {
+				pts = given.slice();
+				pts[0] = [_b.x, _b.y, _b.z];
+				pts[pts.length - 1] = [_a.x, _a.y, _a.z];
+			} else {
+				pts = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], frame, item.excluded, undefined, item.memory).points;
+			}
 			item.points = pts;
+			const legs = pts.length - 1;
+			let length = 0;
+			const along = [0];
+			for (let k = 0; k < legs; k++) {
+				length += Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1], pts[k + 1][2] - pts[k][2]);
+				along.push(length);
+			}
 			const rest = Math.max(0.05, item.rest - (pulls ? pulls[i] || 0 : 0));
 			const t = tension[i] || 0;
+			const slack = rest - length;
 
-			// Share the line's vertices between the path's legs by length, so every via point is a vertex.
-			const legs = pts.length - 1;
-			const legLen = [];
-			let longest = 0;
-			for (let k = 0; k < legs; k++) {
-				legLen.push(Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1], pts[k + 1][2] - pts[k][2]));
-				if (legLen[k] > legLen[longest]) longest = k;
+			// Where the chain's points sit when the string is taut: evenly along the route.
+			const taut = _taut;
+			let leg = 0;
+			for (let k = 0; k <= N; k++) {
+				const d = (k / N) * length;
+				while (leg < legs - 1 && along[leg + 1] < d) leg++;
+				const span = along[leg + 1] - along[leg] || 1;
+				const u = Math.min(1, Math.max(0, (d - along[leg]) / span));
+				const p = pts[leg], q = pts[leg + 1];
+				taut[k * 3] = p[0] + (q[0] - p[0]) * u; taut[k * 3 + 1] = p[1] + (q[1] - p[1]) * u; taut[k * 3 + 2] = p[2] + (q[2] - p[2]) * u;
 			}
-			const share = legLen.map((l) => Math.max(1, Math.round((l / (path.length || 1)) * SEGMENTS)));
-			let spare = SEGMENTS - share.reduce((a, b) => a + b, 0);
-			share[longest] = Math.max(1, share[longest] + spare);
-			spare = SEGMENTS - share.reduce((a, b) => a + b, 0);
-			for (let k = 0; spare < 0 && k < legs; k++) if (share[k] > 1) { share[k]--; spare++; }
 
-			// Slack string: the spare length hangs in a shallow arc (a parabola approximating
-			// a catenary) on its longest leg, and sways a little.
-			let sag = 0;
-			if (broken) sag = 0.35;
-			else if (path.length < rest && t < 0.004) sag = Math.sqrt(Math.max(0, (3 * legLen[longest] * (rest - path.length)) / 8));
-			const sway = sag * 0.18;
-			const data = line.geometry.attributes.instanceStart.data;
-			const arr = data.array;
-			let px = pts[0][0], py = pts[0][1], pz = pts[0][2];
-			let v = 0;
-			const put = (x, y, z) => {
-				const o = v * 6;
-				arr[o] = px; arr[o + 1] = py; arr[o + 2] = pz;
-				arr[o + 3] = x; arr[o + 4] = y; arr[o + 5] = z;
-				px = x; py = y; pz = z; v++;
-			};
-			if (broken) {
-				// A snapped string just hangs from its handle.
-				for (let k = 1; k <= SEGMENTS; k++) {
-					const u = k / SEGMENTS;
-					put(_b.x + Math.sin(time * 2 + i) * 0.02 * u, _b.y - Math.min(rest, 0.7) * u, _b.z);
-				}
+			const hanging = broken || (slack > 0.002 && t < 0.004);
+			if (!hanging || !item.live || dt <= 0) {
+				// Taut (or first frame): the chain lies on the route, at rest.
+				if (!hanging || !item.live) { rope.set(taut); last.set(taut); }
+				item.live = true;
 			} else {
-				for (let k = 0; k < legs; k++) {
-					const p = pts[k], q = pts[k + 1];
-					for (let m = 1; m <= share[k] && v < SEGMENTS; m++) {
-						const u = m / share[k];
-						let x = p[0] + (q[0] - p[0]) * u, y = p[1] + (q[1] - p[1]) * u, z = p[2] + (q[2] - p[2]) * u;
-						if (k === longest && sag > 0) {
-							const bell = 4 * u * (1 - u);
-							y -= sag * bell;
-							x += Math.sin(time * 1.7 + i * 2.1 + u * 3) * sway * bell;
-							z += Math.cos(time * 1.3 + i * 1.3 + u * 2) * sway * bell;
-						}
-						put(x, y, z);
+				// Verlet step: every free point keeps its momentum and falls.
+				const first = 1, end = broken ? N : N - 1;
+				const keep = 1 - Math.min(0.5, 2.2 * dt);
+				for (let k = first; k <= end; k++) {
+					const o = k * 3;
+					for (let c = 0; c < 3; c++) {
+						const now = rope[o + c];
+						rope[o + c] = now + (now - last[o + c]) * keep - (c === 1 ? GRAVITY * dt * dt : 0);
+						last[o + c] = now;
 					}
 				}
-				while (v < SEGMENTS) put(_a.x, _a.y, _a.z);
+				// Then the string's length is enforced: no link may be longer than its share.
+				const link = (broken ? Math.min(rest, 1.2) : rest) / N;
+				// Via points (the string lying over a limb) pin the chain point nearest to them.
+				const pins = _pins;
+				pins.length = 0;
+				if (!broken) for (let k = 1; k < legs; k++) pins.push(Math.min(N - 1, Math.max(1, Math.round((along[k] / (length || 1)) * N))), k);
+				for (let pass = 0; pass < ROPE_PASSES; pass++) {
+					rope[0] = _b.x; rope[1] = _b.y; rope[2] = _b.z;
+					if (!broken) { rope[N * 3] = _a.x; rope[N * 3 + 1] = _a.y; rope[N * 3 + 2] = _a.z; }
+					for (let n = 0; n < pins.length; n += 2) { const o = pins[n] * 3, v = pts[pins[n + 1]]; rope[o] = v[0]; rope[o + 1] = v[1]; rope[o + 2] = v[2]; }
+					for (let k = 0; k < N; k++) {
+						const o = k * 3;
+						const dx = rope[o + 3] - rope[o], dy = rope[o + 4] - rope[o + 1], dz = rope[o + 5] - rope[o + 2];
+						const l = Math.hypot(dx, dy, dz);
+						if (l <= link || l < 1e-9) continue;
+						const fixedA = k === 0, fixedB = !broken && k === N - 1;
+						const share = fixedA ? 0 : fixedB ? 1 : 0.5;
+						const f = (l - link) / l;
+						rope[o] += dx * f * share; rope[o + 1] += dy * f * share; rope[o + 2] += dz * f * share;
+						rope[o + 3] -= dx * f * (1 - share); rope[o + 4] -= dy * f * (1 - share); rope[o + 5] -= dz * f * (1 - share);
+					}
+				}
+				// It lies on the floor rather than passing through it.
+				for (let k = 1; k <= end; k++) if (rope[k * 3 + 1] < 0.004) rope[k * 3 + 1] = 0.004;
+				// Close to taut, ease onto the route so the change from hanging to straight has no jump.
+				if (!broken && slack < 0.02) {
+					const w = 1 - slack / 0.02;
+					for (let k = 3; k < N * 3; k++) rope[k] += (taut[k] - rope[k]) * w;
+				}
+			}
+
+			const data = line.geometry.attributes.instanceStart.data;
+			const arr = data.array;
+			for (let k = 0; k < N; k++) {
+				const o = k * 6, r = k * 3;
+				arr[o] = rope[r]; arr[o + 1] = rope[r + 1]; arr[o + 2] = rope[r + 2];
+				arr[o + 3] = rope[r + 3]; arr[o + 4] = rope[r + 4]; arr[o + 5] = rope[r + 5];
 			}
 			data.needsUpdate = true;
 
@@ -271,3 +311,5 @@ export class StringsView {
 }
 const _white = new THREE.Color(1, 1, 1);
 const NO_PIECES = [];
+const _taut = new Float32Array((SEGMENTS + 1) * 3);
+const _pins = [];

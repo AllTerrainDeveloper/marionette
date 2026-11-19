@@ -221,7 +221,7 @@ export class PuppetSim {
 			const rest = Number.isFinite(def.length) ? def.length : M.dist(restHandle, restAttach) + (def.slack || 0);
 			const excluded = stringExclusions(def, at, rig.bodies, this.wrapProxies);
 			const force = new StringForce(rig.bodies[body].mass / (this.dt * this.dt));
-			this.strings.push({ def, body, handle, at, rest, excluded, force, local: M.sub(at, this.bodies[body].localCom), tension: 0, broken: false, over: 0, path: null });
+			this.strings.push({ def, body, handle, at, rest, excluded, force, local: M.sub(at, this.bodies[body].localCom), tension: 0, broken: false, over: 0, path: null, memory: new Map() });
 		}
 		this.tension = new Float32Array(this.strings.length);
 	}
@@ -244,7 +244,7 @@ export class PuppetSim {
 		});
 		this.contacts.clear();
 		for (const j of this.joints) j.force.reset();
-		this.strings.forEach((s) => { s.broken = false; s.over = 0; s.tension = 0; s.force.release(); });
+		this.strings.forEach((s) => { s.broken = false; s.over = 0; s.tension = 0; s.force.release(); s.memory.clear(); });
 		this.handleOff.forEach((o, i) => { o[0] = c.handleOffset[i][0]; o[1] = c.handleOffset[i][1]; o[2] = c.handleOffset[i][2]; });
 		this._placeHandles(0);
 		this._readBack(true);
@@ -348,7 +348,7 @@ export class PuppetSim {
 			s.path = null;
 			if (!s.def.enabled || s.broken || gain < 0.001) { s.force.release(); return; }
 			const attach = M.add(this.bodyPos(s.body), M.qRot(this.bodyQuat(s.body), s.at));
-			const path = stringPath(this.handleAt(s.handle), attach, frame, s.excluded);
+			const path = stringPath(this.handleAt(s.handle), attach, frame, s.excluded, undefined, s.memory);
 			if (path.length < 1e-6) { s.force.release(); return; }
 			s.path = path;
 			const pts = path.points;

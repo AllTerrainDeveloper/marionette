@@ -114,8 +114,9 @@ export const HANDLES = [
 // The twelve default strings. `at` is the attachment point in the body's local
 // frame. A point inside the wood is moved out to the surface, where the screw
 // eye would be: straight out from the piece's axis, or along `out` if given. `slack` is added to the rest length measured in the rest pose
-// (negative = pre-tensioned). k: elasticity (N/m), c: damping (N·s/m),
-// max: tension ceiling (N). Strings only ever pull.
+// (negative = pre-tensioned). max: tension ceiling (N) — beyond it the string
+// gives. Strings do not stretch and only ever pull. (k and c, an elasticity and a
+// damping, are left from the earlier springy strings and are no longer used.)
 const str = (n, id, label, body, at, handle, slack, k, c, max, group) => ({
 	n, id, label, body, at, handle, slack, k, c, max, group, enabled: true, breakable: false,
 });

@@ -284,7 +284,7 @@ async function boot() {
 		}
 		let brokenMask = 0;
 		sim.strings.forEach((s, i) => { tensionNorm[i] = sim.tension[i] / s.def.max; if (s.broken) brokenMask |= 1 << i; });
-		strings.update(ipos, iquat, sim.handlePos, tensionNorm, brokenMask, clock, sim.ctl.pull);
+		strings.update(ipos, iquat, sim.handlePos, tensionNorm, brokenMask, clock, sim.ctl.pull, null, sim.strings.map((x) => (x.path ? x.path.points : null)));
 
 		stage.update(dt, clock, { x: ipos[chest * 3], y: ipos[chest * 3 + 1], z: ipos[chest * 3 + 2] });
 		stage.render(dt);
