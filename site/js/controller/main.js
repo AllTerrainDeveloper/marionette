@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { BODIES, JOINTS, HANDLES, EFFECTORS, STRINGS, BARS, RIG_HOME } from '../shared/rig-config.js';
 import { MODES, modeById, defaultCustomRig, sanitizeCustomRig, stringsForMode } from '../shared/modes.js';
+import { GESTURES, GESTURE_LIST } from '../shared/gestures.js';
 import { RIG } from '../shared/rig-config.js';
 import { encodeInput, decodeState, seqNewer, PROTOCOL_VERSION } from '../shared/protocol.js';
 import { GuestLink } from '../shared/net.js';
@@ -181,6 +182,7 @@ function startBoard() {
 	resize();
 	window.addEventListener('resize', resize);
 	buildModes();
+	buildMoves();
 	setMode(state.mode.id, false);
 	bindTouch();
 	bindUi();
@@ -211,6 +213,7 @@ function startBoard() {
 			case 'mode': if (typeof msg.id === 'string') setMode(msg.id, false); break;
 			case 'custom': state.custom = sanitizeCustomRig(msg.rig, RIG); store.set('mp.custom', state.custom); if (state.mode.custom) applyStrings(); break;
 			case 'peers': state.phones = msg.phones || 1; if (Array.isArray(msg.slots)) state.slots = [!!msg.slots[0], !!msg.slots[1]]; updateRole(); if (state.phones === 2) toast('Pro: a second puppeteer joined'); break;
+			case 'reset': letGo(); toast('Puppet reset'); break;   // the stage or the other phone pressed Reset
 			default: break;
 		}
 	};
@@ -255,6 +258,25 @@ function buildModes() {
 	}
 }
 
+/** The one-tap moves: every scripted flourish the stage knows, in one row to flick through. */
+function buildMoves() {
+	const nav = $('moves');
+	nav.textContent = '';
+	for (const move of GESTURE_LIST) {
+		const b = document.createElement('button');
+		b.type = 'button'; b.textContent = move.label;
+		b.addEventListener('click', () => {
+			link.send({ t: 'act', id: move.id });
+			buzz(12);
+			// Light the button for as long as the stage will be playing the move.
+			b.classList.add('is-playing');
+			clearTimeout(b.timer);
+			b.timer = setTimeout(() => b.classList.remove('is-playing'), GESTURES[move.id].dur * 1000);
+		});
+		nav.appendChild(b);
+	}
+}
+
 let blurbTimer = 0;
 function setMode(id, announce) {
 	const mode = modeById(id);
@@ -275,6 +297,7 @@ function setMode(id, announce) {
 	const actions = $('actions');
 	actions.textContent = '';
 	for (const a of mode.actions || []) {
+		if (Object.hasOwn(GESTURES, a.id)) continue;   // moves live in their own row; these are the mode's own tricks
 		const b = document.createElement('button');
 		b.type = 'button'; b.textContent = a.label;
 		b.addEventListener('click', () => { link.send({ t: 'act', id: a.id }); buzz(12); });
@@ -359,6 +382,13 @@ function resetItem(item) {
 }
 
 function sendLocks() { link.send({ t: 'locks', joints: [...state.locks] }); }
+
+/** Drops everything this phone is holding, so a reset really leaves the puppet at rest. */
+function letGo() {
+	state.handleOff.clear(); state.pulls.clear(); state.ik.clear(); state.joints.clear(); state.pins.clear(); state.sel = [];
+	state.locks.clear();
+	renderSelection();
+}
 
 function renderSelection() {
 	const sheet = $('sheet');
@@ -591,14 +621,18 @@ function bindUi() {
 	toggle('tool-multi', 'multi', 'Multi-select: tap several controls', 'Single select');
 	$('tool-level').addEventListener('click', () => openCalibration(false));
 	$('tool-reset').addEventListener('click', () => {
-		state.handleOff.clear(); state.pulls.clear(); state.ik.clear(); state.joints.clear(); state.pins.clear(); state.sel = [];
-		state.locks.clear(); sendLocks();
+		letGo();
+		sendLocks();
 		view.orbit = { ...DEFAULT_ORBIT };
-		link.send({ t: 'reset' });
-		renderSelection();
-		toast('Everything reset');
+		link.send({ t: 'reset' });   // the stage stands the puppet up, re-ties broken strings and tells the other phone
+		toast('Puppet reset');
 		buzz(20);
 	});
+	// The selection sheet and toasts sit just above the dock, whatever its height.
+	const dock = $('dock');
+	const measureDock = () => document.documentElement.style.setProperty('--dock-h', `${dock.offsetHeight}px`);
+	if (window.ResizeObserver) new ResizeObserver(measureDock).observe(dock);
+	measureDock();
 	$('btn-pro').addEventListener('click', () => toast('Pro: two phones share this puppet — one bar each'));
 
 	// Thumb stick.
