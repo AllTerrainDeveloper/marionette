@@ -137,7 +137,13 @@ export class StringsView {
 	}
 
 	/** Rebuilds lines and screw eyes for a new string table. */
-	setStrings(defs) {
+	/**
+	 * @param memories optional: one router memory per string, shared with whoever else routes
+	 *                 these strings (the simulation), so that both go round the same limbs and
+	 *                 the physics learns from the drawn string what it is caught on
+	 */
+	setStrings(defs, memories = null) {
+		this.memories = memories;
 		for (const item of this.items) {
 			this.group.remove(item.line);
 			item.line.geometry.dispose();
@@ -168,7 +174,7 @@ export class StringsView {
 				eye.rotation.y = Math.PI / 2;
 				this.opts.parts[body].add(eye);
 			}
-			this.items.push({ def, body, handle, line, eye, tie, rest: stringRestLength(def, tie), excluded: stringExclusions(def, tie, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null, memory: {}, shape: new StringShape(SEGMENTS) });
+			this.items.push({ def, body, handle, line, eye, tie, rest: stringRestLength(def, tie), excluded: stringExclusions(def, tie, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null, memory: (this.memories && this.memories[this.items.length]) || {}, shape: new StringShape(SEGMENTS) });
 		}
 	}
 

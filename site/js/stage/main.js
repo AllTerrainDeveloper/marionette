@@ -319,7 +319,7 @@ async function boot() {
 
 		if (shownStrings !== sim.strings) {
 			shownStrings = sim.strings;
-			strings.setStrings(sim.strings.map((s) => s.def));
+			strings.setStrings(sim.strings.map((s) => s.def), sim.strings.map((s) => s.memory));
 			strings.setResolution(stage.size[0] * stage.size[2], stage.size[1] * stage.size[2]);
 		}
 		let brokenMask = 0;

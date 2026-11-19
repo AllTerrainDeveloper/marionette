@@ -37,7 +37,7 @@ const ON_ROUTE = 0.004;            // a tight chain this close to its route (m) 
 const HINT_SLACK = 0.03;          // spare length (m) below which the chain tells the router which side of things it is on
 const LINK_MARGIN = 0.002;         // clearance the middle of a link keeps from the wood (m)
 const LINK_STEP = 0.016;           // how far a link is eased out of the wood per step (m)
-const TIE_LINKS = 14;               // how many links from the tie get the link check against the string's own limb
+const TIE_SHARE = 14 / 44;               // how many links from the tie get the link check against the string's own limb
 const OWN_PUSH = 0.02;            // the furthest the link check against the string's own limb moves a point in one step (m)
 const MAX_PUSH = 0.03;            // the furthest one correction may move a point out of the wood (m)
 const SWEEP_REACH = 0.04;          // pieces within this (m) of a point caught in the wood are asked where they would have carried it
@@ -50,6 +50,7 @@ const GROW = 2.4;                  // ... and how many times last frame's moveme
 const CATCH_UP = 0.5;              // share of the gap to the chain that what is drawn closes per frame when it is far behind
 const PINCH = -0.0015;             // a string squeezed between two pieces may be this close to the wood (m; negative: a touch inside, where two limbs press together)
 const EASE = 0.003;                 // how far a squeezed string works its way out of the gap per step (m)
+const NEAR_REACH = 0.05;           // pieces within this (m) of the box round the chain and its route are checked against
 const TOUCH = 0.012;              // a chain point this close to a piece counts as resting on it
 const DRAWN_MARGIN = 0.003;       // ... and the least clearance anything drawn keeps from it
 const SHRINK_STEP = 0.006;        // furthest a point is drawn towards the route in one step (m): well under half the thinnest limb
@@ -63,6 +64,7 @@ export class StringShape {
 	/** @param links number of straight pieces the string is drawn with */
 	constructor(links = 44) {
 		this.n = links;
+		this.tie = Math.round(links * TIE_SHARE);   // how many links from the tie get the checks against the string's own limb
 		const size = (links + 1) * 3;
 		this.p = new Float32Array(size);        // the hanging chain
 		this.last = new Float32Array(size);     // ... one step ago
@@ -174,7 +176,7 @@ export class StringShape {
 		this.rigidFrom = n;
 		if (spin) {
 			const tx = end[0] - bx, ty = end[1] - by, tz = end[2] - bz;
-			this.rigidFrom = Math.max(1, n - TIE_LINKS - 1);
+			this.rigidFrom = Math.max(1, n - this.tie - 1);
 			for (let k = this.rigidFrom; k < n; k++) {
 				const o = k * 3;
 				_v[0] = out[o] - tx; _v[1] = out[o + 1] - ty; _v[2] = out[o + 2] - tz;
@@ -213,12 +215,30 @@ export class StringShape {
 		// The pieces this string could be touching, and a figure that changes when any of them moves.
 		const near = this.near, nearIndex = this.nearIndex, own = this.own;
 		near.length = 0; nearIndex.length = 0; own.length = 0;
+		// (Near the string as it lies — the chain and its route — not near the straight line
+		// between its ends: a string wrapped round a limb, or a loop of slack flung wide, is
+		// far from that line, and what it is far out there with is what it must not enter.)
 		const reach = 0.05 + Math.max(0, slack);
+		let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+		for (let k = 0; k <= n; k++) {
+			const o = k * 3;
+			if (p[o] < x0) x0 = p[o]; if (p[o] > x1) x1 = p[o];
+			if (p[o + 1] < y0) y0 = p[o + 1]; if (p[o + 1] > y1) y1 = p[o + 1];
+			if (p[o + 2] < z0) z0 = p[o + 2]; if (p[o + 2] > z1) z1 = p[o + 2];
+		}
+		for (let k = 0; k < route.length; k++) {
+			const r = route[k];
+			if (r[0] < x0) x0 = r[0]; if (r[0] > x1) x1 = r[0];
+			if (r[1] < y0) y0 = r[1]; if (r[1] > y1) y1 = r[1];
+			if (r[2] < z0) z0 = r[2]; if (r[2] > z1) z1 = r[2];
+		}
 		let where = 0;
 		for (let k = 0; k < pieces.length; k++) {
 			const f = pieces[k];
 			if (excluded && excluded.has(k)) continue;
-			if (distanceToSegment(f.o, top, end) > f.bound + reach) continue;
+			const dx = Math.max(x0 - f.o[0], 0, f.o[0] - x1), dy = Math.max(y0 - f.o[1], 0, f.o[1] - y1), dz = Math.max(z0 - f.o[2], 0, f.o[2] - z1);
+			const r = f.bound + NEAR_REACH;
+			if (dx * dx + dy * dy + dz * dz > r * r && distanceToSegment(f.o, top, end) > f.bound + reach) continue;
 			near.push(f); nearIndex.push(k);
 			if (f.body === ownBody) own.push(f);
 			where += f.o[0] + 2 * f.o[1] + 3 * f.o[2] + f.q[0] + f.q[1] + f.q[2];
@@ -411,7 +431,7 @@ export class StringShape {
 			// applied everywhere, it makes a chain zigzag through thin parts such as a hand.)
 			if (own.length && !broken) {
 				// (A few rounds: getting one link out can put its neighbour in.)
-				const first = Math.max(0, n - TIE_LINKS);
+				const first = Math.max(0, n - this.tie);
 				let depth = this._inOwn(first - 1, n - 1);
 				for (let round = 0; round < 3 && depth > 0; round++) {
 					for (let k = first; k < n; k++) {
@@ -443,6 +463,7 @@ export class StringShape {
 		// Last resort, after all the easing above: if the end of the chain still cuts through the
 		// limb the string is tied to (a foot flung about with a loop of slack beside it), that
 		// end is laid along the way round the limb — the same route a tight string would take.
+		if (near.length && !broken) this._heal(p, last, MARGIN, HEAL_REACH, near, 0);
 		if (own.length && !broken) this._heal(p, last, MARGIN);
 
 		// The chain is what is drawn. Real movement is shown at once — anything trailing behind
@@ -467,6 +488,7 @@ export class StringShape {
 		}
 		// What is drawn may trail the chain by a frame or two, but not through the limb the
 		// string is tied to.
+		if (near.length && !broken) this._heal(out, null, DRAWN_MARGIN, HEAL_REACH, near, 0);
 		if (own.length && !broken) this._heal(out, null, DRAWN_MARGIN);
 		// And no leaps. However the chain got where it is, what is drawn moves sideways at most
 		// 2.4 times as far as it did the frame before, or STEADY, whichever is more. A string
@@ -484,9 +506,11 @@ export class StringShape {
 		// Held back like that, the end of the string may be left cutting its own limb. Then the
 		// way round the limb from where it now is — if that is no leap either.
 		let swing = this._swing();
-		if (own.length && !broken) {
+		if (near.length && !broken) {
 			_held.set(out);
-			if (this._heal(out, null, DRAWN_MARGIN, HEAL_REACH)) {
+			let again = this._heal(out, null, DRAWN_MARGIN, HEAL_REACH);
+			if (near.length && this._heal(out, null, DRAWN_MARGIN, HEAL_REACH, near, 0)) again = true;
+			if (again) {
 				swing = this._swing();
 				if (swing > most) {
 					// Too far for one frame: as much of the way there as is not a leap.
@@ -506,13 +530,13 @@ export class StringShape {
 		// ago, when it was clear — widened point by point until the whole end of the string is
 		// clear of the limb, and only if that is no leap either.
 		if (own.length && !broken && this.rigidFrom < n) {
-			const first = Math.max(0, n - TIE_LINKS);
+			const first = Math.max(0, n - this.tie);
 			let c0 = -1, c1 = -1;
 			for (let k = first; k < n; k++) if (this._cuts(out, k, own)) { if (c0 < 0) c0 = k; c1 = k + 1; }
 			if (c0 >= 0) {
 				_held.set(out);
 				let done = false;
-				for (let widen = 0; widen <= TIE_LINKS && !done; widen++) {
+				for (let widen = 0; widen <= this.tie && !done; widen++) {
 					const from = Math.max(this.rigidFrom, c0 - widen), to = Math.min(n - 1, c1 + widen);
 					for (let k = from * 3; k < (to + 1) * 3; k++) out[k] = rigid[k];
 					let clear = true;
@@ -549,10 +573,8 @@ export class StringShape {
 	 * between them are the route's own legs, which do not cut the wood. Exact, where the
 	 * easing in the steps is gradual. Returns whether it had to.
 	 */
-	_heal(points, follow, margin, reach = HEAL_REACH) {
+	_heal(points, follow, margin, reach = HEAL_REACH, wood = this.own, first = Math.max(0, this.n - this.tie)) {
 		const { n } = this;
-		const wood = this.own;
-		const first = Math.max(0, n - TIE_LINKS);
 		let healed = false;
 		for (let k = first; k < n; k++) {
 			if (!this._cuts(points, k, wood)) continue;

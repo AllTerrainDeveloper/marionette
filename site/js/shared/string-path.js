@@ -273,11 +273,16 @@ export function stringExclusions(def, at, bodies, proxies) {
  *
  * `memory` is an object the caller keeps per string ({}). With it the route is continuous
  * in time: last time's via points are carried along with their pieces and slid to where
- * the string now presses, vias the string has lifted off are dropped and new ones added —
- * so a string wound round a limb stays on its side and slides, instead of flipping between
- * two ways round from one moment to the next. The route worked out from scratch is still
- * computed, and wins when it is clearly shorter (the string has slipped free) or when the
- * carried one would cut through the wood.
+ * the string now presses, and new ones are added where a leg would cut the wood. A via is
+ * dropped only when the string has really lifted off its piece: the bend round it has
+ * opened, or the string has slid off the piece's end. That the straight line has come
+ * clear of the piece is not enough — a string a limb has pushed through its line is hooked
+ * round that limb — and neither is another way round being shorter: a string does not pass
+ * through a limb to take it. The carried route is given up only if it would cut the wood.
+ *
+ * Callers that route the same string twice (the simulation and the drawing) can share one
+ * memory; the drawing's chain also writes the pieces it rests on into it (string-shape.js),
+ * which is how the physics learns that a loop of slack has caught on a limb.
  */
 export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN, memory = null) {
 	const fresh = extend([from, to], [-1], frame, excluded, margin);
@@ -285,7 +290,7 @@ export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN, me
 	let best = fresh;
 	if (memory.vias && memory.vias.length) {
 		const kept = carry(from, to, memory.vias, frame, excluded, margin);
-		if (kept.length <= fresh.length * (1 + KEEP_LONGER) + KEEP_SLACK && pathPenetration(kept.points, frame, excluded) < KEEP_DEPTH) best = kept;
+		if (pathPenetration(kept.points, frame, excluded) < KEEP_DEPTH) best = kept;
 	}
 	// Remember each via as a place on its piece, so it moves with the piece.
 	const vias = [];
@@ -294,10 +299,7 @@ export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN, me
 	return finish(best, frame);
 }
 
-/** A carried route may be this much longer than the shortest one before the string lets go of it. */
-const KEEP_LONGER = 0.04;
-const KEEP_SLACK = 0.02;
-/** ... and may not cut deeper than this into any piece (m). */
+/** A carried route may not cut deeper than this into any piece (m). */
 const KEEP_DEPTH = 0.002;
 
 /** Last time's via points, moved with their pieces and slid to where the string presses now. */
@@ -315,14 +317,58 @@ function carry(from, to, vias, frame, excluded, margin) {
 		const rho = Math.hypot(via.at[0], via.at[2]);
 		const side = rho > 1e-6 ? [via.at[0] / rho, via.at[2] / rho] : null;
 		const hit = legHit(f, prev, next, margin, END_CLEARANCE / segLen, side);
-		// No longer pressed against this piece here: the string has lifted off it.
-		if (!hit || hit.depth <= 0) continue;
-		points.push(hit.point);
+		if (hit && hit.depth > 0) { points.push(hit.point); pieces.push(via.piece); continue; }
+		// The straight line now clears this piece. That alone does not free the string: one
+		// that a limb has pushed through its line is still hooked round the limb's far side,
+		// and stays there for as long as it bends round it. Only when the bend has opened, or
+		// the string has slid off the end of the piece, has it lifted off.
+		const hooked = hook(f, via.at, prev, next, margin);
+		if (!hooked) continue;
+		points.push(hooked);
 		pieces.push(via.piece);
 	}
 	points.push(to);
 	pieces.push(-1);
 	return extend(points, pieces, frame, excluded, margin);
+}
+
+/** The least bend (as the length of the sum of the two unit directions the string leaves in) that still presses a string on a piece. */
+const HOOK_BEND = 0.03;
+/** How far a hooked string slides along the surface per routing, per unit of sideways pull (m). */
+const HOOK_SLIDE = 0.02;
+
+/**
+ * Where a string that was on piece f at `at` (piece coordinates) lies on it now, if it is
+ * still hooked round the piece between `prev` and `next`: it has no friction, so it slides
+ * over the surface the way the two ends pull it, and it is still on the piece while the
+ * pull of the two ends presses it against the wood. Null once the bend has opened or it has
+ * slid off an end.
+ */
+function hook(f, at, prev, next, margin) {
+	let u = [at[0], at[1], at[2]];
+	let point = null;
+	for (let step = 0; step < 4; step++) {
+		if (u[1] <= f.y0 || u[1] >= f.y1) return null;
+		const rho = Math.hypot(u[0], u[2]);
+		const reach = radiusAt(f.table, u[1]) + margin / f.radial;
+		if (rho < 1e-6 || reach <= 0) return null;
+		u = [(u[0] / rho) * reach, u[1], (u[2] / rho) * reach];
+		point = fromPiece(f, u);
+		const a = sub(prev, point), b = sub(next, point);
+		const la = len(a), lb = len(b);
+		if (la < 1e-6 || lb < 1e-6) return null;
+		const pull = [a[0] / la + b[0] / lb, a[1] / la + b[1] / lb, a[2] / la + b[2] / lb];
+		const inward = sub(fromPiece(f, [0, u[1], 0]), point);
+		const li = len(inward);
+		if (li < 1e-6) return null;
+		const press = (pull[0] * inward[0] + pull[1] * inward[1] + pull[2] * inward[2]) / li;
+		if (press < HOOK_BEND) return null;
+		if (step === 3) break;
+		// Slide: the part of the pull that lies along the surface.
+		const along = [pull[0] - (inward[0] / li) * press, pull[1] - (inward[1] / li) * press, pull[2] - (inward[2] / li) * press];
+		u = toPiece(f, [point[0] + along[0] * HOOK_SLIDE, point[1] + along[1] * HOOK_SLIDE, point[2] + along[2] * HOOK_SLIDE]);
+	}
+	return point;
 }
 
 /** Adds via points to a route until no leg of it cuts through a piece. `pieces[i]` is the piece via i rests on. */
