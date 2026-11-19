@@ -5,6 +5,7 @@
 import RAPIER from '../site/vendor/rapier.mjs';
 import { PuppetSim } from '../site/js/stage/sim.js';
 import { Controller } from '../site/js/stage/control.js';
+import { GESTURES } from '../site/js/shared/gestures.js';
 import { RIG, STRING_WEIGHT } from '../site/js/shared/rig-config.js';
 import { wrapFrame, stringPath, distanceToSegment, pushOut } from '../site/js/shared/string-path.js';
 import { StringShape } from '../site/js/shared/string-shape.js';
@@ -35,10 +36,14 @@ function depthInWood(out, frame, excluded, ownBody) {
 	return { own, other };
 }
 
-function watch(label, { idle = false, drive = null, settle = 8, seconds = 10 }) {
+function watch(label, { idle = false, drive = null, settle = 8, seconds = 10, moves = 0 }) {
 	const sim = new PuppetSim(RAPIER);
-	const ctl = idle ? new Controller(sim) : null;
+	const ctl = idle || moves ? new Controller(sim) : null;
 	if (ctl) ctl.nextIdle = 1e9;   // the drifting bar only, no scripted moves
+	// `moves`: a phone has joined and someone taps through the one-tap moves, one every `moves` seconds.
+	const moveIds = Object.keys(GESTURES);
+	let nextMove = settle, tapped = 0;
+	if (moves) ctl.connect(0);
 	const shapes = sim.strings.map(() => new StringShape());
 	const prev = sim.strings.map(() => null);
 	const memories = sim.strings.map((s) => s.memory);   // shared with the simulation, as on the stage
@@ -56,6 +61,7 @@ function watch(label, { idle = false, drive = null, settle = 8, seconds = 10 }) 
 	const total = Math.round((settle + seconds) * 60);
 	for (let f = 0; f < total; f++) {
 		for (let i = 0; i < stepsPerFrame; i++) {
+			if (moves && t >= nextMove) { ctl.play(moveIds[tapped++ % moveIds.length]); nextMove += moves; }
 			if (drive) drive(sim, t); if (ctl) ctl.update(); sim.step(); t += sim.dt;
 			sim.bodies.forEach(({ body }, k) => {
 				if (f >= settle * 60) { jolt = Math.max(jolt, Math.hypot(body.v[0] - lastV[k][0], body.v[1] - lastV[k][1], body.v[2] - lastV[k][2])); fastest = Math.max(fastest, Math.hypot(body.v[0], body.v[1], body.v[2])); }
@@ -157,6 +163,16 @@ function several(label, driveFrom, starts, options) {
 	check('strings do not jump even when the puppet is thrown about', r.snaps === 0, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
 	check('and are never in their own limb, rarely in another', r.ownDeep < 0.005 && r.otherShare < 0.001, `own limb: deepest ${(r.ownDeep * 1000).toFixed(1)} mm (never over 5), another part ${(r.otherShare * 100).toFixed(2)}% of string-frames`);
 	check('nor below the floor', r.under <= 0 && r.resets === 0, `lowest ${(r.under * 1000).toFixed(1)} mm under`);
+}
+
+// 4b. Someone tapping through the phone's one-tap moves without waiting for any to finish. The
+//     moves take turns (control.js); stacked, they threw the puppet about at ten metres a second.
+{
+	for (const every of [1, 0.5]) {
+		const r = watch(`a move tapped every ${every} s`, { moves: every, settle: 4, seconds: 60 });
+		check(`tapping a move every ${every} s keeps the puppet under control`, r.fastest < 6 && r.resets === 0, `fastest part ${(r.fastest * 1000).toFixed(0)} mm/s`);
+		check('and its strings do not jump, enter their own limb or go under the floor', r.snaps === 0 && r.ownDeep < 0.005 && r.under <= 0 && r.otherShare < 0.001, `${r.snaps} snap(s), own limb deepest ${(r.ownDeep * 1000).toFixed(1)} mm, another part ${(r.otherShare * 100).toFixed(3)}% of string-frames`);
+	}
 }
 
 // 5. Hanging: the bar lifted so the feet are off the floor. Nothing may jump out of control,

@@ -45,7 +45,7 @@ The panel also shows live measurements against the rendered meshes (how much str
 | `site/js/shared/net.js` | Signaling client and WebRTC link (two data channels). |
 | `site/js/stage/avbd.js` | The physics solver: Augmented Vertex Block Descent for rigid bodies — joints with limits and motors, frictional contacts, inextensible strings. No dependencies. |
 | `site/js/stage/sim.js` | The puppet on that solver: control rig, string routing, contact detection, IK, balance, safety guards. |
-| `site/js/shared/gestures.js` | The one-tap moves (bow, wave, cheer, salute, kicks…), shared by the stage that plays them and the phone that lists them. |
+| `site/js/shared/gestures.js` | The one-tap moves (bow, wave, cheer, salute, kicks…), shared by the stage that plays them and the phone that lists them. They take turns: tapping a new one makes the one playing bow out over a third of a second (stacked, they threw the puppet about). |
 | `site/js/stage/control.js` | Phone input → bar / handle / IK / motor targets; gait; idle animation. |
 | `site/js/stage/debug.js` | Debug mode: movement routines and live measurements, loaded only with `?debug`. |
 | `site/js/stage/scene.js` | Theatre set, lighting, post-processing, adaptive quality. |
@@ -78,7 +78,7 @@ Connectivity: STUN only. Devices on the same Wi-Fi connect directly; some carrie
 ```bash
 node tools/sim-test.mjs          # hang, lift, shake, IK, collapse, recover, strings vs the real meshes
 node tools/control-test.mjs      # protocol round trips, every mode, walking, two phones, locks
-node tools/string-test.mjs       # drawn strings: still, idle, gentle play, thrown about, hanging, lying, a foot jolted at random — jumps, strings in the wood, strings under the floor
+node tools/string-test.mjs       # drawn strings: still, idle, gentle play, thrown about, moves tapped in a hurry, hanging, lying, a foot jolted at random — jumps, strings in the wood, strings under the floor
 node tools/tangle-test.mjs       # optional tangling: strings catch on each other, hold, drag, and do nothing when nothing touches
 node tools/solver-bench.mjs      # solver settings compared on a hard scenario (calm, joint gaps, limits, overlap, cost)
 ```
