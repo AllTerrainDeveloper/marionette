@@ -28,12 +28,12 @@ import { Solver, Joint, Contact, StringForce, jointAngles } from './avbd.js';
  * ratio: how far a penalty may ramp above its base (see avbd.js).
  * stringCollision: strings wrap around the limbs.
  *
- * These follow the authors' 3D reference solver (alpha 0.99, no separate
+ * These follow the authors' 3D reference solver (alpha 0.99, gamma 0.999, no separate
  * post-stabilisation pass) except that angle rows keep a fixed penalty: with the
  * puppet's very light clavicles and hands resting on their joint limits, ramping
  * those made a standing puppet fidget.
  */
-export const DEFAULTS = { hz: 240, iterations: 5, postStabilize: false, alpha: 0.99, gamma: 0.99, betaLin: 1e6, betaAng: 0, ratio: 100, stringCollision: true };
+export const DEFAULTS = { hz: 240, iterations: 5, postStabilize: false, alpha: 0.99, gamma: 0.999, betaLin: 1e6, betaAng: 0, ratio: 100, stringCollision: true };
 export const DT = 1 / DEFAULTS.hz;
 
 const MAX_LINVEL = 14;
@@ -44,7 +44,9 @@ const CONTACT_REACH = 0.03;       // contacts are created this far ahead of touc
 const FLOOR_FRICTION = { foot: 1.0, other: 0.7 };
 const BODY_FRICTION = 0.35;
 const ANGULAR_LEVER = 0.1;        // typical lever arm (m): sets the base stiffness of angle rows
+const JOINT_BASE = 4;             // a joint's starting penalty, in units of (reduced mass / dt^2): the neck's light bodies carry half the puppet
 const JOINT_FRICTION = 4;          // how quickly a wooden joint eats a free swing (1/s)
+const ROUTE_HZ = 120;             // how often strings are re-routed round the limbs
 const REEL_SPEED = 2;            // fastest a string is taken in when shortened or re-tied (m/s)
 
 export class PuppetSim {
@@ -89,6 +91,7 @@ export class PuppetSim {
 		this._wrapFrame = [];
 		this._noBodies = [];
 		this._v = [0, 0, 0];
+		this._routeTick = 0;
 		this._build();
 		this.setStrings(rig.strings);
 		this.reset();
@@ -104,7 +107,7 @@ export class PuppetSim {
 		// Geometry only: this world is never stepped.
 		const world = (this.world = new R.World({ x: 0, y: 0, z: 0 }));
 		const solver = (this.solver = new Solver({
-			dt, iterations: o.iterations, alpha: o.alpha, postStabilize: o.postStabilize, gamma: o.gamma, betaLin: o.betaLin, betaAng: o.betaAng, slack: o.slack, slackAng: o.slackAng, correctLin: o.correctLin, correctAng: o.correctAng, ratio: o.ratio, gravity: [0, -rig.gravity, 0],
+			dt, iterations: o.iterations, alpha: o.alpha, postStabilize: o.postStabilize, gamma: o.gamma, betaLin: o.betaLin, betaAng: o.betaAng, slack: o.slack, slackAng: o.slackAng, limitRelax: o.limitRelax, correctLin: o.correctLin, correctAng: o.correctAng, ratio: o.ratio, gravity: [0, -rig.gravity, 0],
 		}));
 
 		// Each body's colliders are convex hulls of the same turned pieces that are drawn
@@ -165,7 +168,7 @@ export class PuppetSim {
 			const mass = 1 / (1 / rig.bodies[a].mass + 1 / rig.bodies[b].mass);
 			const force = new Joint(
 				a, b, M.sub(anchorA, this.bodies[a].localCom), M.sub(anchorB, this.bodies[b].localCom), hinge, lo, hi,
-				mass / (dt * dt), Math.max(Math.min(...inertia), mass * (o.angularLever || ANGULAR_LEVER) ** 2) / (dt * dt)
+				(mass * JOINT_BASE) / (dt * dt), Math.max(Math.min(...inertia), mass * (o.angularLever || ANGULAR_LEVER) ** 2) / (dt * dt)
 			);
 			force.mmax = def.torque;
 			// A limb swinging freely about the joint turns its own inertia plus its mass at
@@ -210,6 +213,25 @@ export class PuppetSim {
 		this.handleOff = rig.handles.map(() => [0, 0, 0]);
 	}
 
+	/**
+	 * Changes the step rate and the number of solver sweeps while running. Penalties are
+	 * stiffnesses relative to mass / dt^2, so they are rescaled; multipliers are forces and
+	 * carry over as they are.
+	 */
+	setRate(hz, iterations = this.opts.iterations) {
+		const r = (hz / this.opts.hz) ** 2;
+		this.opts.hz = hz;
+		this.opts.iterations = iterations;
+		this.dt = 1 / hz;
+		this.solver.dt = this.dt;
+		this.solver.iterations = iterations;
+		if (r === 1) return;
+		for (const j of this.joints) j.force.rescale(r);
+		for (const s of this.strings) { s.force.kMin *= r; s.force.k *= r; }
+		for (const c of this.contacts.values()) { c.kMin *= r; c.k[0] *= r; c.k[1] *= r; c.k[2] *= r; }
+		for (const pair of this.pairs) pair.stiffness *= r;
+	}
+
 	/** Replaces the string table (mode switch, custom rig, add / remove strings). */
 	setStrings(defs) {
 		const rig = this.rig;
@@ -227,7 +249,7 @@ export class PuppetSim {
 			const rest = Number.isFinite(def.length) ? def.length : M.dist(restHandle, restAttach) + (def.slack || 0);
 			const excluded = stringExclusions(def, at, rig.bodies, this.wrapProxies);
 			const force = new StringForce(rig.bodies[body].mass / (this.dt * this.dt));
-			this.strings.push({ def, body, handle, at, rest, excluded, force, local: M.sub(at, this.bodies[body].localCom), tension: 0, broken: false, over: 0, path: null });
+			this.strings.push({ def, body, handle, at, rest, excluded, force, local: M.sub(at, this.bodies[body].localCom), tension: 0, broken: false, over: 0, path: null, memory: {} });
 		}
 		this.tension = new Float32Array(this.strings.length);
 	}
@@ -250,7 +272,7 @@ export class PuppetSim {
 		});
 		this.contacts.clear();
 		for (const j of this.joints) j.force.reset();
-		this.strings.forEach((s) => { s.broken = false; s.over = 0; s.tension = 0; s.force.release(); });
+		this.strings.forEach((s) => { s.broken = false; s.over = 0; s.tension = 0; s.force.release(); s.memory.vias = null; s.nodes = null; });
 		this.handleOff.forEach((o, i) => { o[0] = c.handleOffset[i][0]; o[1] = c.handleOffset[i][1]; o[2] = c.handleOffset[i][2]; });
 		this._placeHandles(0);
 		this._readBack(true);
@@ -349,31 +371,41 @@ export class PuppetSim {
 	_routeStrings(forces) {
 		const c = this.ctl;
 		const gain = c.stringGain;
-		const frame = this.opts.stringCollision ? wrapFrame(this.wrapProxies, this.pos, this.quat, this._wrapFrame) : this._noBodies;
+		// Finding the way round the limbs is the costly part and the limbs barely move in one
+		// step, so it is done about 120 times a second however fast the physics steps. In
+		// between, a string keeps its via points where they are on their limbs.
+		const every = Math.max(1, Math.round(this.opts.hz / ROUTE_HZ));
+		const reroute = this._routeTick++ % every === 0;
+		const frame = !reroute ? null : this.opts.stringCollision ? wrapFrame(this.wrapProxies, this.pos, this.quat, this._wrapFrame) : this._noBodies;
 		this.strings.forEach((s, i) => {
-			s.path = null;
-			if (!s.def.enabled || s.broken || gain < 0.001) { s.force.release(); return; }
-			const attach = M.add(this.bodyPos(s.body), M.qRot(this.bodyQuat(s.body), s.at));
-			const path = stringPath(this.handleAt(s.handle), attach, frame, s.excluded);
-			if (path.length < 1e-6) { s.force.release(); return; }
-			s.path = path;
-			const pts = path.points;
-			const n = pts.length - 1;
-			const nodes = [];
-			for (let k = 1; k < n; k++) {
-				const body = path.bodies[k];
-				nodes.push({ body, local: M.qRot(M.qConj(this.bodyQuat(body)), M.sub(pts[k], this.bodyCom(body))) });
+			if (!s.def.enabled || s.broken || gain < 0.001) { s.path = null; s.nodes = null; s.force.release(); return; }
+			const handle = this.handleAt(s.handle);
+			if (reroute || !s.nodes) {
+				const attach = M.add(this.bodyPos(s.body), M.qRot(this.bodyQuat(s.body), s.at));
+				const path = stringPath(handle, attach, frame || this._noBodies, s.excluded, undefined, s.memory);
+				if (path.length < 1e-6) { s.path = null; s.nodes = null; s.force.release(); return; }
+				s.path = path;
+				const pts = path.points;
+				const n = pts.length - 1;
+				const nodes = [];
+				for (let k = 1; k < n; k++) {
+					const body = path.bodies[k];
+					nodes.push({ body, local: M.qRot(M.qConj(this.bodyQuat(body)), M.sub(pts[k], this.bodyCom(body))) });
+				}
+				nodes.push({ body: s.body, local: s.local });
+				s.nodes = nodes;
 			}
-			nodes.push({ body: s.body, local: s.local });
+			const nodes = s.nodes;
 			// A string that is suddenly much too short (pulled in, or tied back on while the
 			// puppet lies on the floor) is taken in at a finite speed rather than in one step.
 			const target = Math.max(0.05, s.rest - c.pull[i]);
-			const from = s.force.active ? s.force.rest : path.length;
+			const from = s.force.active ? s.force.rest : s.path.length;
 			const rest = from > target ? Math.max(target, from - REEL_SPEED * this.dt) : target;
 			// How much the handle's own motion and the reeling-in lengthen the path this step.
-			const h = s.handle * 3, d = M.norm(M.sub(pts[1], pts[0]));
+			const first = M.add(this.bodyCom(nodes[0].body), M.qRot(this.bodyQuat(nodes[0].body), nodes[0].local));
+			const h = s.handle * 3, d = M.norm(M.sub(first, handle));
 			const fresh = -(this.handleVel[h] * d[0] + this.handleVel[h + 1] * d[1] + this.handleVel[h + 2] * d[2]) * this.dt + (from > rest ? from - rest : 0);
-			s.force.route(this.handleAt(s.handle), nodes, rest, s.def.max * gain, fresh);
+			s.force.route(handle, nodes, rest, s.def.max * gain, fresh);
 			forces.push(s.force);
 		});
 	}

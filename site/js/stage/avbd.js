@@ -230,12 +230,17 @@ export class Solver {
 		this.betaAng = opts.betaAng ?? 300;
 		// Decay of multipliers and penalties from one step to the next (warm start).
 		this.gamma = opts.gamma ?? 0.99;
-		// One-sided constraints (strings, contacts, joint limits) must let go as soon as
-		// they are slack. A multiplier lambda carried by penalty k only fades once the
-		// constraint has opened by lambda / k, so on the opening side k is taken as at
-		// least lambda / slack: the force is gone within this much slack (metres, radians).
-		this.slack = opts.slack ?? 0.0005;
-		this.slackAng = opts.slackAng ?? 0.005;
+		// Optional release rule for one-sided constraints: on the opening side the penalty is
+		// taken as at least lambda / slack, so the force is gone within that much slack
+		// (metres, radians). Off by default: at 240 Hz the base penalties are stiff enough,
+		// and on joint limits the rule made the multiplier flip on and off from sweep to sweep.
+		this.slack = opts.slack ?? Infinity;
+		this.slackAng = opts.slackAng ?? Infinity;
+		// Joint-limit multipliers take only this share of each update. A limit sits between
+		// two bodies that both give way to it within one sweep, so a full update overshoots
+		// and the multiplier alternates high / low from sweep to sweep — the result then
+		// depended on whether the number of sweeps was odd or even.
+		this.limitRelax = opts.limitRelax ?? 0.35;
 		this.gravity = opts.gravity ?? [0, -9.81, 0];
 		this.bodies = [];
 		this.active = [];
@@ -579,9 +584,17 @@ export class Joint {
 		}
 		for (let r = 0; r < this.n; r++) {
 			const f = this._limit(s, r);
-			this.lamLim[r] = f;
+			this.lamLim[r] = this.lamLim[r] + (f - this.lamLim[r]) * s.limitRelax;
 			if (f !== 0) this.kLim[r] = Math.min(this.kLim[r] + s.betaAng * Math.abs(this._err), this.minAng * s.ratio);
 		}
+	}
+
+	/** Scales every penalty by r: used when the time step changes (penalties go with 1 / dt^2). */
+	rescale(r) {
+		this.minLin *= r; this.minAng *= r;
+		for (let i = 0; i < 3; i++) this.kLin[i] *= r;
+		for (let i = 0; i < 2; i++) this.kAng[i] *= r;
+		for (let i = 0; i < this.n; i++) this.kLim[i] *= r;
 	}
 
 	/** Forgets multipliers and ramped penalties. */

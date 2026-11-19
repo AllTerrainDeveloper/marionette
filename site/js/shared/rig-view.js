@@ -168,7 +168,7 @@ export class StringsView {
 				eye.rotation.y = Math.PI / 2;
 				this.opts.parts[body].add(eye);
 			}
-			this.items.push({ def, body, handle, line, eye, tie, rest: stringRestLength(def, tie), excluded: stringExclusions(def, tie, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null, shape: new StringShape(SEGMENTS) });
+			this.items.push({ def, body, handle, line, eye, tie, rest: stringRestLength(def, tie), excluded: stringExclusions(def, tie, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null, memory: {}, shape: new StringShape(SEGMENTS) });
 		}
 	}
 
@@ -197,7 +197,7 @@ export class StringsView {
 			_b.set(handlePos[handle * 3], handlePos[handle * 3 + 1], handlePos[handle * 3 + 2]);
 			item.attach.copy(_a); item.top.copy(_b);
 
-			const pts = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], frame, item.excluded).points;
+			const pts = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], frame, item.excluded, undefined, item.memory).points;
 			item.points = pts;
 			const rest = Math.max(0.05, item.rest - (pulls ? pulls[i] || 0 : 0));
 			const t = tension[i] || 0;

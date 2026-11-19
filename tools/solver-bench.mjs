@@ -9,11 +9,18 @@ import * as M from '../site/js/shared/math.js';
 await RAPIER.init();
 
 const variants = [
+	['120 Hz x 6', { hz: 120, iterations: 6 }],
+	['120 Hz x 10', { hz: 120, iterations: 10 }],
+	['180 Hz x 5', { hz: 180, iterations: 5 }],
+	['240 Hz x 4', { hz: 240, iterations: 4 }],
 	['240 Hz x 5 (default)', {}],
 	['240 Hz x 8', { iterations: 8 }],
-	['120 Hz x 10', { hz: 120, iterations: 10 }],
-	['60 Hz x 20', { hz: 60, iterations: 20 }],
-	['240 Hz x 5, post-stabilised', { postStabilize: true }],
+	['360 Hz x 4', { hz: 360, iterations: 4 }],
+	['360 Hz x 5', { hz: 360, iterations: 5 }],
+	['480 Hz x 4', { hz: 480, iterations: 4 }],
+	['480 Hz x 5', { hz: 480, iterations: 5 }],
+	['720 Hz x 4', { hz: 720, iterations: 4 }],
+	['960 Hz x 4', { hz: 960, iterations: 4 }],
 ];
 
 function drive(sim, t) {
@@ -42,7 +49,7 @@ for (const [label, opts] of variants) {
 		sim.step();
 		gap = Math.max(gap, sim.jointGap());
 		for (const j of sim.joints) for (let n = 0; n < j.force.n; n++) limit = Math.max(limit, j.force.th[n] - j.force.hi[n], j.force.lo[n] - j.force.th[n]);
-		if (i % 8 === 0) overlap = Math.max(overlap, sim.deepestOverlap().depth);
+		if (i % Math.round(hz / 30) === 0) overlap = Math.max(overlap, sim.deepestOverlap().depth);
 	}
 	const ms = (performance.now() - t0) / steps;
 	console.log(`${label.padEnd(30)} at rest ${(rest * 1000).toFixed(0).padStart(4)} mm/s | joint gap ${mm(gap).padStart(8)} | past a limit ${(limit * 57.3).toFixed(1).padStart(5)} deg | limb overlap ${mm(overlap).padStart(8)} | resets ${sim.resets - 1} | ${(ms * hz / 60).toFixed(2)} ms per 60 Hz frame`);

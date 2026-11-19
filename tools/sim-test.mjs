@@ -157,6 +157,32 @@ check('stands back up when re-strung', sim.bodyPos(ix.head)[1] > 1.4, `head y ${
 	}
 }
 
+// 10. The stage changes the step rate while running to fit its frame budget: the puppet
+//     must not notice. Stand, perform and hang through a run of rate changes.
+{
+	const s3 = new PuppetSim(RAPIER);
+	const rates = [[240, 5], [480, 4], [120, 5], [720, 4], [180, 5], [960, 4], [360, 4], [240, 5]];
+	let gap = 0, t = 0;
+	for (let i = 0; i < 240 * 4; i++) s3.step();
+	const before = s3.bodyPos(s3.bodyIx.head);
+	for (const [hz, sweeps] of rates) { s3.setRate(hz, sweeps); for (let i = 0; i < hz * 0.75; i++) { s3.step(); gap = Math.max(gap, s3.jointGap()); } }
+	const moved = M.dist(before, s3.bodyPos(s3.bodyIx.head));
+	check('changing the step rate leaves a standing puppet standing', moved < 0.004 && s3.maxSpeed() < 0.05 && s3.resets === 1, `head moved ${(moved * 1000).toFixed(2)} mm, speed ${(s3.maxSpeed() * 1000).toFixed(1)} mm/s, joint gap ${(gap * 1000).toFixed(2)} mm`);
+	gap = 0;
+	for (let round = 0; round < 3; round++) {
+		for (const [hz, sweeps] of rates) {
+			s3.setRate(hz, sweeps);
+			for (let i = 0; i < hz * 0.4; i++) {
+				t += s3.dt;
+				const q = M.qFromYPR(Math.sin(t * 1.1) * 0.9, Math.sin(t * 1.7) * 0.7, Math.cos(t * 1.3) * 0.7);
+				RIG.bars.forEach((b, k) => { s3.ctl.bars[k].pos = M.add(home, M.qRot(q, b.offset)); s3.ctl.bars[k].quat = q; });
+				s3.step(); gap = Math.max(gap, s3.jointGap());
+			}
+		}
+	}
+	check('changing the step rate mid-performance keeps the puppet together', gap < 0.03 && s3.resets === 1, `worst joint gap ${(gap * 1000).toFixed(1)} mm, resets ${s3.resets - 1}`);
+}
+
 // Timing.
 const t0 = performance.now(); run(5); const ms = (performance.now() - t0) / (5 / DT);
 console.log(`

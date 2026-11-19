@@ -90,7 +90,7 @@ const fromPiece = (f, u) => add(f.o, qRot(f.q, [u[0] * f.scale[0], u[1] * f.scal
  * alongside a limb, or straight down through the torso — cases a closest-approach-to-
  * the-axis test misses, because there the axis distance says nothing about the bulge.
  */
-function legHit(f, p, q, margin, inset = 0) {
+function legHit(f, p, q, margin, inset = 0, side = null) {
 	const P = toPiece(f, p), Q = toPiece(f, q);
 	const dx = Q[0] - P[0], dy = Q[1] - P[1], dz = Q[2] - P[2];
 	let s0 = 0, s1 = 1;
@@ -150,6 +150,8 @@ function legHit(f, p, q, margin, inset = 0) {
 		const l = Math.hypot(dx, dz);
 		if (l > 1e-6) { nx = dz / l; nz = -dx / l; } else { nx = 0; nz = 1; }
 	}
+	// A string already lying against this piece stays on the side it is on.
+	if (side && nx * side[0] + nz * side[1] < 0) { nx = side[0]; nz = side[1]; }
 	return { s, depth, point: fromPiece(f, [nx * reach, cy, nz * reach]) };
 }
 
@@ -253,14 +255,69 @@ export function stringExclusions(def, at, bodies, proxies) {
  * Returns { points, bodies, length }: points[0] is the handle, the last is the attachment,
  * anything between is a via point resting on body `bodies[i]` (-1 for the two ends).
  *
- * This is the shortest way round for a string pulled tight. It has no memory: a string
- * that is loose is not on this route at all (the renderers draw it hanging free).
+ * This is where a string pulled tight lies. A string that is loose is not on this route
+ * at all (the renderers draw it hanging free).
+ *
+ * `memory` is an object the caller keeps per string ({}). With it the route is continuous
+ * in time: last time's via points are carried along with their pieces and slid to where
+ * the string now presses, vias the string has lifted off are dropped and new ones added —
+ * so a string wound round a limb stays on its side and slides, instead of flipping between
+ * two ways round from one moment to the next. The route worked out from scratch is still
+ * computed, and wins when it is clearly shorter (the string has slipped free) or when the
+ * carried one would cut through the wood.
  */
-export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN) {
-	const points = [from, to];
-	const bodies = [-1, -1];
+export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN, memory = null) {
+	const fresh = extend([from, to], [-1], frame, excluded, margin);
+	if (!memory) return finish(fresh, frame);
+	let best = fresh;
+	if (memory.vias && memory.vias.length) {
+		const kept = carry(from, to, memory.vias, frame, excluded, margin);
+		if (kept.length <= fresh.length * (1 + KEEP_LONGER) + KEEP_SLACK && pathPenetration(kept.points, frame, excluded) < KEEP_DEPTH) best = kept;
+	}
+	// Remember each via as a place on its piece, so it moves with the piece.
+	const vias = [];
+	for (let i = 1; i < best.points.length - 1; i++) vias.push({ piece: best.pieces[i], at: toPiece(frame[best.pieces[i]], best.points[i]) });
+	memory.vias = vias;
+	return finish(best, frame);
+}
+
+/** A carried route may be this much longer than the shortest one before the string lets go of it. */
+const KEEP_LONGER = 0.04;
+const KEEP_SLACK = 0.02;
+/** ... and may not cut deeper than this into any piece (m). */
+const KEEP_DEPTH = 0.002;
+
+/** Last time's via points, moved with their pieces and slid to where the string presses now. */
+function carry(from, to, vias, frame, excluded, margin) {
+	const points = [from];
+	const pieces = [-1];
+	for (let i = 0; i < vias.length; i++) {
+		const via = vias[i];
+		const f = frame[via.piece];
+		if (!f || (excluded && excluded.has(via.piece))) continue;
+		const prev = points[points.length - 1];
+		const next = i + 1 < vias.length && frame[vias[i + 1].piece] ? fromPiece(frame[vias[i + 1].piece], vias[i + 1].at) : to;
+		const segLen = len(sub(next, prev));
+		if (segLen < 0.03) continue;
+		const rho = Math.hypot(via.at[0], via.at[2]);
+		const side = rho > 1e-6 ? [via.at[0] / rho, via.at[2] / rho] : null;
+		const hit = legHit(f, prev, next, margin, END_CLEARANCE / segLen, side);
+		// No longer pressed against this piece here: the string has lifted off it.
+		if (!hit || hit.depth <= 0) continue;
+		points.push(hit.point);
+		pieces.push(via.piece);
+	}
+	points.push(to);
+	pieces.push(-1);
+	return extend(points, pieces, frame, excluded, margin);
+}
+
+/** Adds via points to a route until no leg of it cuts through a piece. `pieces[i]` is the piece via i rests on. */
+function extend(points, pieces, frame, excluded, margin) {
+	if (pieces.length < points.length) pieces.push(-1);
 	let counts = null;
-	for (let n = 0; n < MAX_VIAS; n++) {
+	for (let i = 1; i < points.length - 1; i++) { counts = counts || {}; counts[pieces[i]] = (counts[pieces[i]] || 0) + 1; }
+	for (let n = points.length - 2; n < MAX_VIAS; n++) {
 		let best = null;
 		for (let i = 0; i < points.length - 1; i++) {
 			const p = points[i], q = points[i + 1];
@@ -273,19 +330,21 @@ export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN) {
 				if (pointSegDist(f.o, p, q) > f.bound + margin) continue;
 				const hit = legHit(f, p, q, margin, END_CLEARANCE / segLen);
 				if (!hit || hit.depth <= (seen ? REWRAP_DEPTH : 0) || (best && hit.depth <= best.depth)) continue;
-				best = { depth: hit.depth, at: i + 1, piece: k, body: f.body, point: hit.point };
+				best = { depth: hit.depth, at: i + 1, piece: k, point: hit.point };
 			}
 		}
 		if (!best) break;
 		points.splice(best.at, 0, best.point);
-		bodies.splice(best.at, 0, best.body);
+		pieces.splice(best.at, 0, best.piece);
 		counts = counts || {};
 		counts[best.piece] = (counts[best.piece] || 0) + 1;
 	}
 	let length = 0;
 	for (let i = 0; i < points.length - 1; i++) length += len(sub(points[i + 1], points[i]));
-	return { points, bodies, length };
+	return { points, pieces, length };
 }
+
+const finish = (route, frame) => ({ points: route.points, bodies: route.pieces.map((k) => (k < 0 ? -1 : frame[k].body)), length: route.length });
 
 /** How deep a path still cuts into any (non-excluded) piece, in metres. For tests and benchmarks. */
 export function pathPenetration(points, frame, excluded) {

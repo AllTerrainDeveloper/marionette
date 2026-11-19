@@ -45,7 +45,8 @@ export function stringsInsideWood(sim, model, { routed = true } = {}) {
 		const handle = sim.handleAt(s.handle);
 		const attach = sim.pointAt(s.body, s.at);
 		// Routed on the transforms being measured, exactly as the renderers route what they draw.
-		const points = routed ? stringPath(handle, attach, frame, s.excluded).points : [handle, attach];
+		// (carrying the simulation's route forward, as a renderer carries its own from frame to frame)
+		const points = routed ? stringPath(handle, attach, frame, s.excluded, undefined, { vias: s.memory.vias }).points : [handle, attach];
 		for (let k = 0; k < points.length - 1; k++) {
 			const p = new THREE.Vector3(...points[k]), q = new THREE.Vector3(...points[k + 1]);
 			const L = p.distanceTo(q);

@@ -235,13 +235,52 @@ async function boot() {
 	const barPos = new Float32Array(RIG.bars.length * 3);
 	const barQuat = new Float32Array(RIG.bars.length * 4);
 	const tensionNorm = new Float32Array(64);
-	const snapEvery = Math.max(1, Math.round(sim.opts.hz / SNAPSHOT_HZ));
-	const maxSteps = Math.ceil(sim.opts.hz / 10);
+	// Physics takes what a 60 fps frame has to spare. Each level is [steps per second, solver
+	// sweeps, cost relative to the default]; accuracy rises with the step rate (see
+	// tools/solver-bench.mjs), so spare time buys smaller steps, and a busy frame gives them back.
+	const LEVELS = [[120, 5, 0.8], [180, 5, 0.9], [240, 5, 1], [360, 4, 1.25], [480, 4, 1.5], [720, 4, 2.15], [960, 4, 2.7]];
+	const FRAME_MS = 1000 / 60;
+	const RESERVE_MS = 4.5;        // of each frame, left for the GPU and the browser
+	const PHYSICS_MAX_MS = 9;      // never spend more than this on physics, however idle the rest is
+	let level = LEVELS.findIndex((l) => l[0] === sim.opts.hz);
+	if (level < 0) level = 2;
+	let snapEvery = 1, maxSteps = 1;
+	function setLevel(next) {
+		level = next;
+		sim.setRate(LEVELS[level][0], LEVELS[level][1]);
+		snapEvery = Math.max(1, Math.round(sim.opts.hz / SNAPSHOT_HZ));
+		maxSteps = Math.ceil(sim.opts.hz / 10);
+	}
+	setLevel(level);
+	let physEma = 0, otherEma = 3, overFor = 0, roomFor = 0, cooling = 2;
+	/** Once a frame: move to a cheaper level if physics overran its share, to a finer one if there is room. */
+	function govern(dt, physicsMs, workMs) {
+		if (dt > 0.05) return;      // a hitch or a hidden tab says nothing about the budget
+		physEma += (physicsMs - physEma) * 0.08;
+		otherEma += (workMs - physicsMs - otherEma) * 0.08;
+		if (!tuning.adaptive) return;
+		const budget = Math.min(PHYSICS_MAX_MS, Math.max(0.8, FRAME_MS - RESERVE_MS - otherEma));
+		tuning.budget = budget;
+		cooling -= dt;
+		overFor = physEma > budget ? overFor + dt : 0;
+		const next = level + 1 < LEVELS.length ? physEma * (LEVELS[level + 1][2] / LEVELS[level][2]) : Infinity;
+		roomFor = next < budget * 0.7 && cooling <= 0 ? roomFor + dt : 0;
+		if (overFor > 0.3 && level > 0) {
+			physEma *= LEVELS[level - 1][2] / LEVELS[level][2];
+			setLevel(level - 1);
+			overFor = 0; roomFor = 0; cooling = 3;
+		} else if (roomFor > 1.2) {
+			physEma = next;
+			setLevel(level + 1);
+			roomFor = 0; cooling = 1.5;
+		}
+	}
 	const chest = sim.bodyIx.chest;
 	const fpsEl = $('#fps');
 	let last = performance.now();
 	let acc = 0, steps = 0, clock = 0, frames = 0, fpsAt = last, physMs = 0;
-	const tuning = { timeScale: 1 };   // debug mode slows time through this
+	// timeScale: debug mode slows time through this. adaptive: let the governor above choose the step rate.
+	const tuning = { timeScale: 1, adaptive: !new URLSearchParams(location.search).has('fixed'), budget: 0, get level() { return level; }, levels: LEVELS, setLevel: (i) => setLevel(Math.max(0, Math.min(LEVELS.length - 1, i))), govern };
 
 	function frame(now) {
 		requestAnimationFrame(frame);
@@ -259,7 +298,8 @@ async function boot() {
 			if (++steps % snapEvery === 0) sendSnapshots();
 		}
 		if (n === maxSteps) acc = 0;
-		physMs += performance.now() - t0;
+		const physicsMs = performance.now() - t0;
+		physMs += physicsMs;
 
 		// Render between the last two physics states.
 		const a = acc / sim.dt;
@@ -289,10 +329,11 @@ async function boot() {
 		stage.update(dt, clock, { x: ipos[chest * 3], y: ipos[chest * 3 + 1], z: ipos[chest * 3 + 2] });
 		stage.render(dt);
 		if (stage.adapt(dt * 1000)) resize();
+		govern(dt, physicsMs, performance.now() - t0);
 
 		frames++;
 		if (now - fpsAt > 1000) {
-			if (!fpsEl.hidden) fpsEl.textContent = `${Math.round((frames * 1000) / (now - fpsAt))} fps · physics ${(physMs / frames).toFixed(2)} ms · quality ${stage.quality}`;
+			if (!fpsEl.hidden) fpsEl.textContent = `${Math.round((frames * 1000) / (now - fpsAt))} fps · physics ${(physMs / frames).toFixed(2)} ms at ${sim.opts.hz} Hz × ${sim.opts.iterations} · quality ${stage.quality}`;
 			frames = 0; fpsAt = now; physMs = 0;
 		}
 	}

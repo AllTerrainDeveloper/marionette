@@ -227,7 +227,7 @@ export class Controller {
 		add('main.yaw', 0.22 * Math.sin(t * 0.17));
 		add('limb.roll', 0.05 * Math.sin(t * 0.31 + 0.6));
 		if (t > this.nextIdle) {
-			this.play(['wave', 'jig', 'bow', 'wave'][Math.floor(t / 9) % 4]);
+			this.play(['wave', 'nod', 'bow', 'waveR'][Math.floor(t / 9) % 4]);   // quiet moves only: nothing that throws the strings about
 			this.nextIdle = t + 9 + ((t * 7.3) % 5);
 		}
 	}
