@@ -213,5 +213,61 @@ function several(label, driveFrom, starts, options) {
 	check('a weight resting on a part is carried by the strings that hold the part', withLoad - plain > 1 && withLoad - plain < 4, `2 N on a foot: the strings pull ${(withLoad - plain).toFixed(2)} N more (${plain.toFixed(1)} N -> ${withLoad.toFixed(1)} N)`);
 }
 
+// 7. The worst case for a string's own limb: a foot thrown about at random with a loop of slack
+//    beside it — a new direction every frame, so the string never gets a run-up. Far harder
+//    than the physics ever moves a foot. The string may not be drawn inside the foot, whatever
+//    happens; and up to twenty degrees a frame it may not jump either.
+{
+	const jolt = (degrees, travel) => {
+		let seed = 12345;
+		const random = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+		const sim = new PuppetSim(RAPIER);
+		for (let i = 0; i < sim.opts.hz * 4; i++) sim.step();
+		const s = sim.strings.find((x) => x.def.id === 'ankleL'), body = s.body;
+		const pos = Float32Array.from(sim.pos), quat = Float32Array.from(sim.quat);
+		const base = [pos[body * 3], pos[body * 3 + 1] + 0.25, pos[body * 3 + 2]];   // lifted clear of the floor
+		let q = [quat[body * 4], quat[body * 4 + 1], quat[body * 4 + 2], quat[body * 4 + 3]], off = [0, 0, 0];
+		const handle = sim.handleAt(s.handle), shape = new StringShape(), memory = {}, frame = [];
+		let deepest = 0, snaps = 0, prev = null;
+		const h = [0, 0];
+		for (let f = 0; f < 60 * 40; f++) {
+			q = M.qNorm(M.qMul(M.qAxisAngle(M.norm([random() - 0.5, random() - 0.5, random() - 0.5]), (random() * 2 - 1) * degrees * Math.PI / 180), q));
+			off = off.map((v) => v * 0.8 + (random() - 0.5) * 2 * travel);
+			for (let c = 0; c < 3; c++) pos[body * 3 + c] = base[c] + off[c];
+			for (let c = 0; c < 4; c++) quat[body * 4 + c] = q[c];
+			wrapFrame(sim.wrapProxies, pos, quat, frame);
+			const tie = M.add([pos[body * 3], pos[body * 3 + 1], pos[body * 3 + 2]], M.qRot(q, s.at));
+			const route = stringPath(handle, tie, frame, s.excluded, undefined, memory).points;
+			let length = 0;
+			for (let k = 0; k < route.length - 1; k++) length += M.dist(route[k], route[k + 1]);
+			const out = shape.update(route, length + 0.3, false, frame, s.excluded, 1 / 60, memory, body);
+			const n = shape.n;
+			if (f > 120) {
+				deepest = Math.max(deepest, depthInWood(out, frame, s.excluded, body).own);
+				let most = 0;
+				for (let k = 1; k < n; k++) {
+					let d = Infinity;
+					for (let j = 0; j < n; j++) {
+						const u0 = j / n, u1 = (j + 1) / n;
+						const A = [0, 1, 2].map((c) => prev[j * 3 + c] + (out[c] - prev[c]) * (1 - u0) + (out[n * 3 + c] - prev[n * 3 + c]) * u0);
+						const B = [0, 1, 2].map((c) => prev[j * 3 + 3 + c] + (out[c] - prev[c]) * (1 - u1) + (out[n * 3 + c] - prev[n * 3 + c]) * u1);
+						d = Math.min(d, distanceToSegment([out[k * 3], out[k * 3 + 1], out[k * 3 + 2]], A, B));
+					}
+					most = Math.max(most, d);
+				}
+				if (h[1] > 0.02 && h[1] > 2.5 * Math.max(h[0], most)) snaps++;
+				h[0] = h[1]; h[1] = most;
+			}
+			prev = Float32Array.from(out);
+		}
+		return { deepest, snaps, rode: shape.rode };
+	};
+	let r = jolt(20, 0.03);
+	check('a foot jolted 20 degrees and 3 cm a frame never has its string drawn inside it', r.deepest < 0.005, `deepest ${(r.deepest * 1000).toFixed(1)} mm in 40 s; the string went round with the foot ${r.rode} time(s) to stay out`);
+	check('and the string does not jump', r.snaps === 0 && r.rode > 0, `${r.snaps} snap(s)`);
+	r = jolt(35, 0.04);
+	check('nor at 35 degrees and 4 cm a frame, where it has to jump to keep up', r.deepest < 0.005, `deepest ${(r.deepest * 1000).toFixed(1)} mm; went round with the foot ${r.rode} time(s); ${r.snaps} snap(s)`);
+}
+
 console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);

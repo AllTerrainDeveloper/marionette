@@ -78,7 +78,7 @@ Connectivity: STUN only. Devices on the same Wi-Fi connect directly; some carrie
 ```bash
 node tools/sim-test.mjs          # hang, lift, shake, IK, collapse, recover, strings vs the real meshes
 node tools/control-test.mjs      # protocol round trips, every mode, walking, two phones, locks
-node tools/string-test.mjs       # drawn strings: still, idle, gentle play, thrown about, hanging, lying — jumps, strings in the wood, strings under the floor
+node tools/string-test.mjs       # drawn strings: still, idle, gentle play, thrown about, hanging, lying, a foot jolted at random — jumps, strings in the wood, strings under the floor
 node tools/tangle-test.mjs       # optional tangling: strings catch on each other, hold, drag, and do nothing when nothing touches
 node tools/solver-bench.mjs      # solver settings compared on a hard scenario (calm, joint gaps, limits, overlap, cost)
 ```
