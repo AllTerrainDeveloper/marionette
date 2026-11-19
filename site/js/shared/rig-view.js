@@ -201,7 +201,7 @@ export class StringsView {
 			item.points = pts;
 			const rest = Math.max(0.05, item.rest - (pulls ? pulls[i] || 0 : 0));
 			const t = tension[i] || 0;
-			const shape = item.shape.update(pts, rest, broken, frame, item.excluded, dt);
+			const shape = item.shape.update(pts, rest, broken, frame, item.excluded, dt, item.memory);
 
 			const data = line.geometry.attributes.instanceStart.data;
 			const arr = data.array;

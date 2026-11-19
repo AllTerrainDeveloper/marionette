@@ -23,7 +23,7 @@
 //
 // Pure maths on arrays: no Three.js, no DOM, so it can be tested in Node.
 
-import { pushOut, distanceToSegment } from './string-path.js';
+import { pushOut, distanceToSegment, viaOn, FLOOR } from './string-path.js';
 
 const STEP = 1 / 120;            // fixed time step of the chain (s)
 const MAX_STEPS = 3;             // per update
@@ -31,7 +31,11 @@ const KEEP = 0.86;               // share of a point's velocity kept per step
 const GRAVITY = 9.81;
 const PASSES = 18;               // length-enforcing sweeps per step
 const MARGIN = 0.006;            // how far off the wood a loose string rests (m)
-const BLEND = 0.03;              // spare length (m) over which a string goes from on-route to fully hanging
+const TOUCH = 0.012;              // a chain point this close to a piece counts as resting on it
+const DRAWN_MARGIN = 0.003;       // ... and the least clearance anything drawn keeps from it
+const HANG_EASE = 0.12;           // time (s) over which a string goes between the two when its slack changes
+const BLEND = 0.03;               // spare length (m) over which a string goes from on-route to fully hanging
+const SHORTEN_ROUNDS = 16;       // curve-shortening rounds per step for a chain that is too long
 const STILL = 0.00004;           // movement per update (m) under which a point counts as not moving
 const STILL_UPDATES = 10;        // that many still updates in a row and the chain is frozen
 const EASE = 0.07;                // time constant (s) with which the drawn string follows its target
@@ -49,11 +53,13 @@ export class StringShape {
 		this.ends = new Float64Array(6);        // where the two ends were last time
 		this.before = new Float32Array(size);   // scratch: the chain at the start of a step
 		this.live = false;
+		this.hang = 0;                          // how much of the hanging shape shows, 0..1
 		this.time = 0;
 		this.still = 0;
 		this.asleep = false;
 		this.mark = new Float64Array(8);        // what the frozen chain was frozen against
 		this.near = [];
+		this.nearIndex = [];
 	}
 
 	/**
@@ -63,9 +69,12 @@ export class StringShape {
 	 * @param pieces    the puppet's pieces in the world (string-path.js wrapFrame)
 	 * @param excluded  indices of pieces to ignore (those the tie point sits in)
 	 * @param dt        seconds since the last call
+	 * @param memory    the router's memory for this string (see stringPath): while the string hangs loose,
+	 *                  the pieces it rests on are written there, so that when it is pulled tight again the
+	 *                  route goes round them on the side the string is actually on
 	 * @returns the points to draw, flat [x, y, z, ...], links + 1 of them
 	 */
-	update(route, rest, broken, pieces, excluded, dt) {
+	update(route, rest, broken, pieces, excluded, dt, memory = null) {
 		const n = this.n, p = this.p, last = this.last, taut = this.taut, out = this.out;
 		const legs = route.length - 1;
 		const top = route[0], end = route[legs];
@@ -86,12 +95,21 @@ export class StringShape {
 			const span = along[leg + 1] - along[leg] || 1;
 			const u = Math.min(1, Math.max(0, (d - along[leg]) / span));
 			const a = route[leg], b = route[leg + 1];
-			taut[k * 3] = a[0] + (b[0] - a[0]) * u; taut[k * 3 + 1] = a[1] + (b[1] - a[1]) * u; taut[k * 3 + 2] = a[2] + (b[2] - a[2]) * u;
+			taut[k * 3] = a[0] + (b[0] - a[0]) * u; taut[k * 3 + 1] = Math.max(FLOOR, a[1] + (b[1] - a[1]) * u); taut[k * 3 + 2] = a[2] + (b[2] - a[2]) * u;
 		}
 
 		// How much of the hanging shape shows: none when tight, all of it with a few centimetres to spare.
 		const slack = rest - length;
-		const hang = broken ? 1 : Math.min(1, Math.max(0, slack / BLEND));
+		// How much of the hanging shape shows: none when tight, all of it with a few centimetres
+		// to spare. (Mixing the two is only sound when both pass every limb on the same side;
+		// the chain tells the router which side it is on — see `memory` — so that they do.)
+		// It follows the slack over a moment rather than at once: a route wound round several
+		// pieces changes length abruptly now and then, and the string must not twitch tight
+		// and loose with it.
+		const wanted = broken ? 1 : Math.min(1, Math.max(0, slack / BLEND));
+		this.hang += (wanted - this.hang) * (this.live ? 1 - Math.exp(-Math.max(dt, 1e-4) / HANG_EASE) : 1);
+		if (wanted <= 0 && this.hang < 0.02) this.hang = 0;
+		const hang = this.hang;
 		const ends = this.ends;
 		if (!this.live) {
 			p.set(taut); last.set(taut); out.set(taut);
@@ -114,25 +132,25 @@ export class StringShape {
 			}
 		}
 
+		// The pieces this string could be touching, and a figure that changes when any of them moves.
+		const near = this.near, nearIndex = this.nearIndex;
+		near.length = 0; nearIndex.length = 0;
+		const reach = 0.05 + Math.max(0, slack);
+		let where = 0;
+		for (let k = 0; k < pieces.length; k++) {
+			const f = pieces[k];
+			if (excluded && excluded.has(k)) continue;
+			if (distanceToSegment(f.o, top, end) > f.bound + reach) continue;
+			near.push(f); nearIndex.push(k);
+			where += f.o[0] + 2 * f.o[1] + 3 * f.o[2] + f.q[0] + f.q[1] + f.q[2];
+		}
+
 		let moved = 0;
 		if (hang <= 0) {
 			// Tight: the chain is the route.
 			p.set(taut); last.set(taut);
 			this.asleep = false; this.still = 0; this.time = 0;
 		} else {
-			// The pieces this string could be touching, and a figure that changes when any of them moves.
-			const near = this.near;
-			near.length = 0;
-			const reach = 0.05 + slack;
-			let where = 0;
-			for (let k = 0; k < pieces.length; k++) {
-				const f = pieces[k];
-				if (excluded && excluded.has(k)) continue;
-				if (distanceToSegment(f.o, top, end) > f.bound + reach) continue;
-				near.push(f);
-				where += f.o[0] + 2 * f.o[1] + 3 * f.o[2] + f.q[0] + f.q[1] + f.q[2];
-			}
-
 			const mark = this.mark;
 			if (this.asleep) {
 				const change = Math.abs(top[0] - mark[0]) + Math.abs(top[1] - mark[1]) + Math.abs(top[2] - mark[2])
@@ -182,38 +200,58 @@ export class StringShape {
 				}
 				// The sweeps above converge slowly on a chain that is nearly straight, and a chain
 				// left too long bellies out further than the spare length allows. So measure it,
-				// and if it is too long draw every point in towards the route: a bulge shrunk by a
-				// factor g uses about g * g as much extra length. As the slack runs out the chain
-				// therefore arrives on the route by itself, with nothing left to jump.
+				// and while it is too long pull every point towards the middle of its two
+				// neighbours — which shortens a curve without taking it through anything, as long
+				// as each point is put back outside the wood as it goes. The chain thus tightens
+				// along its own way round the limbs and arrives taut by itself.
 				if (!broken) {
-					let chain = 0;
-					for (let k = 0; k < n; k++) chain += Math.hypot(p[k * 3 + 3] - p[k * 3], p[k * 3 + 4] - p[k * 3 + 1], p[k * 3 + 5] - p[k * 3 + 2]);
-					if (chain > rest + 1e-5 && chain > length + 1e-7) {
-						const g = Math.sqrt(Math.max(0, rest - length) / (chain - length));
-						for (let k = 3; k < n * 3; k++) {
-							const moved = (taut[k] - p[k]) * (1 - g);
-							p[k] += moved; last[k] += moved;
+					for (let round = 0; round < SHORTEN_ROUNDS; round++) {
+						let chain = 0;
+						for (let k = 0; k < n; k++) chain += Math.hypot(p[k * 3 + 3] - p[k * 3], p[k * 3 + 4] - p[k * 3 + 1], p[k * 3 + 5] - p[k * 3 + 2]);
+						// (in proportion to how much too long it is, so that a chain a hair over length is
+						// nudged a hair, every step alike, rather than left alone and then corrected in bursts)
+						const pull = Math.min(0.5, (chain - rest) / (0.004 * rest));
+						if (pull <= 0.001) break;
+						for (let k = 1; k < n; k++) {
+							const o = k * 3;
+							_point[0] = p[o] + ((p[o - 3] + p[o + 3]) / 2 - p[o]) * pull;
+							_point[1] = Math.max(FLOOR, p[o + 1] + ((p[o - 2] + p[o + 4]) / 2 - p[o + 1]) * pull);
+							_point[2] = p[o + 2] + ((p[o - 1] + p[o + 5]) / 2 - p[o + 2]) * pull;
+							const clear = near.length ? resolve(near, _point) : _point;
+							last[o] += clear[0] - p[o]; last[o + 1] += clear[1] - p[o + 1]; last[o + 2] += clear[2] - p[o + 2];
+							p[o] = clear[0]; p[o + 1] = clear[1]; p[o + 2] = clear[2];
 						}
 					}
 				}
-				// It cannot be in the wood or under the floor. A point that is gets moved to a place
-				// clear of every piece; if there is none nearby it stays where it was a step ago.
-				// Either way it stops there (no speed carried into the next step). The two points
-				// next to the tie are left alone: the screw eye stands off the wood, and they follow it.
-				const lastFree = broken ? free : free - 2;
-				for (let k = 1; k <= lastFree; k++) {
+				// It cannot be in the wood or under the floor. A point that is gets moved to the
+				// nearest place clear of every piece (or, failing that, straight up until it is),
+				// and stops there: no speed is carried into the next step.
+				for (let k = 1; k <= free; k++) {
 					const o = k * 3;
-					let hit = false;
-					if (near.length) {
-						_point[0] = p[o]; _point[1] = p[o + 1]; _point[2] = p[o + 2];
-						const clear = resolve(near, _point);
-						if (clear !== _point) {
-							hit = true;
-							if (clear) { p[o] = clear[0]; p[o + 1] = clear[1]; p[o + 2] = clear[2]; } else { p[o] = before[o]; p[o + 1] = before[o + 1]; p[o + 2] = before[o + 2]; }
-						}
+					_point[0] = p[o]; _point[1] = Math.max(p[o + 1], FLOOR); _point[2] = p[o + 2];
+					const clear = near.length ? resolve(near, _point) : _point;
+					if (clear !== _point || p[o + 1] < FLOOR) {
+						p[o] = clear[0]; p[o + 1] = clear[1]; p[o + 2] = clear[2];
+						last[o] = p[o]; last[o + 1] = p[o + 1]; last[o + 2] = p[o + 2];
 					}
-					if (p[o + 1] < 0.004) { p[o + 1] = 0.004; hit = true; }
-					if (hit) { last[o] = p[o]; last[o + 1] = p[o + 1]; last[o + 2] = p[o + 2]; }
+				}
+				// Nor may a link cut through a piece between two points that are themselves clear
+				// (a loop of slack falling "through" a shoe): if the middle of a link is in the
+				// wood, both its ends move by what it takes to get the middle out.
+				if (near.length) {
+					for (let k = 0; k < n; k++) {
+						const o = k * 3;
+						_point[0] = (p[o] + p[o + 3]) / 2; _point[1] = (p[o + 1] + p[o + 4]) / 2; _point[2] = (p[o + 2] + p[o + 5]) / 2;
+						const mx = _point[0], my = _point[1], mz = _point[2];
+						const clear = resolve(near, _point);
+						if (clear === _point) continue;
+						const dx = clear[0] - mx, dy = clear[1] - my, dz = clear[2] - mz;
+						const a = k >= 1, b = k + 1 <= free;
+						// A pinned end cannot move, so the free one moves twice as far.
+						const fa = a ? 1 : 0, fb = b ? 1 : 0;
+						if (a) { p[o] += dx * fa; p[o + 1] = Math.max(FLOOR, p[o + 1] + dy * fa); p[o + 2] += dz * fa; last[o] = p[o]; last[o + 1] = p[o + 1]; last[o + 2] = p[o + 2]; }
+						if (b) { p[o + 3] += dx * fb; p[o + 4] = Math.max(FLOOR, p[o + 4] + dy * fb); p[o + 5] += dz * fb; last[o + 3] = p[o + 3]; last[o + 4] = p[o + 4]; last[o + 5] = p[o + 5]; }
+					}
 				}
 				for (let k = 3; k < p.length; k++) moved = Math.max(moved, Math.abs(p[k] - before[k]));
 			}
@@ -221,33 +259,96 @@ export class StringShape {
 
 		// Drawn: the hanging chain, eased onto the route as the spare length runs out — and
 		// what is on screen follows that over a few frames rather than snapping to it.
-		const onRoute = 1 - hang;
 		const follow = 1 - Math.exp(-Math.max(dt, 1e-4) / EASE);
 		for (let k = 3; k < out.length - (broken ? 0 : 3); k++) {
-			const target = p[k] + (taut[k] - p[k]) * onRoute;
+			const target = p[k] + (taut[k] - p[k]) * (1 - hang);
 			const step = (target - out[k]) * follow;
 			out[k] += step;
+			if (k % 3 === 1 && out[k] < FLOOR) out[k] = FLOOR;
 			moved = Math.max(moved, Math.abs(step));
 		}
-		out[0] = top[0]; out[1] = top[1]; out[2] = top[2];
-		if (!broken) { out[n * 3] = end[0]; out[n * 3 + 1] = end[1]; out[n * 3 + 2] = end[2]; }
+		// Easing and mixing are only allowed to produce a string that is clear of the wood.
+		// If what they give cuts through a piece — the route has just changed to another way
+		// round a limb, or the hanging shape and the route pass it on different sides — the
+		// string is drawn where it should be at once (the hanging shape if it is mostly loose,
+		// else the route): a jump is better than a string through a leg.
+		if (near.length && !this._clear(out)) {
+			const pure = hang >= 0.5 ? p : taut;
+			for (let k = 3; k < out.length - (broken ? 0 : 3); k++) out[k] = pure[k];
+			moved = Math.max(moved, STILL * 2);
+			// Should even that touch the wood, its points are put on the surface.
+			for (let k = 1; k < n; k++) {
+				const o = k * 3;
+				_point[0] = out[o]; _point[1] = out[o + 1]; _point[2] = out[o + 2];
+				const clear = resolve(near, _point, DRAWN_MARGIN);
+				if (clear !== _point) { out[o] = clear[0]; out[o + 1] = clear[1]; out[o + 2] = clear[2]; }
+			}
+		}
+		out[0] = top[0]; out[1] = Math.max(FLOOR, top[1]); out[2] = top[2];
+		if (!broken) { out[n * 3] = end[0]; out[n * 3 + 1] = Math.max(FLOOR, end[1]); out[n * 3 + 2] = end[2]; }
 
+		if (hang > 0 && memory && !broken) memory.vias = this._contacts();
 		if (hang > 0) {
 			this.still = moved < STILL ? this.still + 1 : 0;
 			if (this.still >= STILL_UPDATES) this.asleep = true;
 		}
 		return out;
 	}
+
+	/** Whether a string drawn through these points stays out of the wood: its points and the middle of each link. */
+	_clear(points) {
+		const { n, near } = this;
+		for (let k = 0; k < n; k++) {
+			const o = k * 3;
+			for (let half = 0; half < 2; half++) {
+				if (k === 0 && half === 0) continue;
+				const x = half ? (points[o] + points[o + 3]) / 2 : points[o], y = half ? (points[o + 1] + points[o + 4]) / 2 : points[o + 1], z = half ? (points[o + 2] + points[o + 5]) / 2 : points[o + 2];
+				for (let i = 0; i < near.length; i++) {
+					const f = near[i];
+					const ex = x - f.o[0], ey = y - f.o[1], ez = z - f.o[2];
+					if (ex * ex + ey * ey + ez * ez > f.bound * f.bound) continue;
+					_probe[0] = x; _probe[1] = y; _probe[2] = z;
+					if (pushOut(f, _probe, -DRAWN_MARGIN)) return false;   // more than a few millimetres inside
+				}
+			}
+		}
+		return true;
+	}
+
+	/** The pieces the hanging chain rests on, in order from the handle: one place on each. */
+	_contacts() {
+		const { p, n, near, nearIndex } = this;
+		const vias = [];
+		_seen.clear();
+		for (let k = 1; k < n; k++) {
+			const o = k * 3;
+			_point[0] = p[o]; _point[1] = p[o + 1]; _point[2] = p[o + 2];
+			for (let i = 0; i < near.length; i++) {
+				if (_seen.has(i)) continue;
+				const f = near[i];
+				const ex = _point[0] - f.o[0], ey = _point[1] - f.o[1], ez = _point[2] - f.o[2];
+				const r = f.bound + TOUCH;
+				if (ex * ex + ey * ey + ez * ez > r * r) continue;
+				if (!pushOut(f, _point, TOUCH)) continue;
+				_seen.add(i);
+				vias.push(viaOn(f, nearIndex[i], _point));
+			}
+		}
+		return vias;
+	}
 }
 
 const _along = [];
+const _seen = new Set();
+const _probe = [0, 0, 0];
 const _point = [0, 0, 0];
 
 /**
- * A place for `point` clear of every piece. Returns `point` itself if it already is,
- * the nearest way out that is clear of all pieces if there is one, or null.
+ * A place for `point` clear of every piece and above the floor. Returns `point` itself if
+ * it already is; otherwise the nearest way out that is clear of all pieces; otherwise the
+ * point lifted straight up until it is clear — a string comes to lie on top of things.
  */
-function resolve(pieces, point) {
+function resolve(pieces, point, margin = MARGIN) {
 	let from = point;
 	for (let round = 0; round < 3; round++) {
 		let best = null, bestMove = Infinity, far = null, farMove = -1;
@@ -255,31 +356,33 @@ function resolve(pieces, point) {
 		for (let i = 0; i < pieces.length; i++) {
 			const f = pieces[i];
 			const ex = from[0] - f.o[0], ey = from[1] - f.o[1], ez = from[2] - f.o[2];
-			const r = f.bound + MARGIN + 0.002;
+			const r = f.bound + margin + 0.002;
 			if (ex * ex + ey * ey + ez * ez > r * r) continue;
-			const exit = pushOut(f, from, MARGIN);
+			const exit = pushOut(f, from, margin);
 			if (!exit) continue;
 			inside = true;
 			const move = Math.hypot(exit[0] - from[0], exit[1] - from[1], exit[2] - from[2]);
 			if (move > farMove) { farMove = move; far = exit; }
-			if (move < bestMove && isClear(pieces, exit, f)) { bestMove = move; best = exit; }
+			if (move < bestMove && exit[1] >= FLOOR && isClear(pieces, exit, f, margin)) { bestMove = move; best = exit; }
 		}
 		if (!inside) return from;
 		if (best) return best;
-		from = far;      // out of the deepest piece first, then look again
+		from = far[1] >= FLOOR ? far : [far[0], FLOOR, far[2]];      // out of the deepest piece first, then look again
 	}
-	return null;
+	const up = [point[0], Math.max(point[1], FLOOR), point[2]];
+	for (let step = 0; step < 40 && !isClear(pieces, up, null, margin); step++) up[1] += 0.005;
+	return up;
 }
 
-function isClear(pieces, point, except) {
+function isClear(pieces, point, except, margin = MARGIN) {
 	for (let i = 0; i < pieces.length; i++) {
 		const f = pieces[i];
 		if (f === except) continue;
 		const ex = point[0] - f.o[0], ey = point[1] - f.o[1], ez = point[2] - f.o[2];
-		const r = f.bound + MARGIN;
+		const r = f.bound + margin;
 		if (ex * ex + ey * ey + ez * ez > r * r) continue;
 		// A hair inside the margin still counts as clear, or two touching pieces would never agree.
-		if (pushOut(f, point, MARGIN - 0.0015)) return false;
+		if (pushOut(f, point, margin - 0.0015)) return false;
 	}
 	return true;
 }

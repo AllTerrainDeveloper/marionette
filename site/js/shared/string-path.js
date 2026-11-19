@@ -31,6 +31,8 @@ import { SHAPES, radiusTable, radiusAt } from './puppet-shapes.js';
 
 /** Half the string's thickness plus a hair, so it rests on the surface rather than in it. */
 export const STRING_MARGIN = 0.004;
+/** The lowest a string can be: lying on the stage floor (y = 0). */
+export const FLOOR = 0.004;
 /** How far a string's tie point (a screw eye) stands off the wood, so the string leaves it rather than lying on it. */
 export const TIE_STANDOFF = 0.012;
 /** The most via points one string may have. */
@@ -140,8 +142,9 @@ function legHit(f, p, q, margin, inset = 0, side = null) {
 	const r = radiusAt(f.table, cy);
 	const rho = Math.hypot(cx, cz);
 	const sideways = (r - rho) * f.radial;
-	if (overTop && (f.y1 - cy) * sy < sideways) return { s, depth, point: fromPiece(f, [cx, f.y1 + margin / sy, cz]) };
-	if (underBottom && (cy - f.y0) * sy < sideways) return { s, depth, point: fromPiece(f, [cx, f.y0 - margin / sy, cz]) };
+	// (A way out that would put the string under the floor is no way out.)
+	if (overTop && (f.y1 - cy) * sy < sideways) { const point = fromPiece(f, [cx, f.y1 + margin / sy, cz]); if (point[1] >= FLOOR) return { s, depth, point }; }
+	if (underBottom && (cy - f.y0) * sy < sideways) { const point = fromPiece(f, [cx, f.y0 - margin / sy, cz]); if (point[1] >= FLOOR) return { s, depth, point }; }
 	const reach = r + margin / f.radial;
 	let nx, nz;
 	if (rho > 1e-6) { nx = cx / rho; nz = cz / rho; }
@@ -152,7 +155,14 @@ function legHit(f, p, q, margin, inset = 0, side = null) {
 	}
 	// A string already lying against this piece stays on the side it is on.
 	if (side && nx * side[0] + nz * side[1] < 0) { nx = side[0]; nz = side[1]; }
-	return { s, depth, point: fromPiece(f, [nx * reach, cy, nz * reach]) };
+	let point = fromPiece(f, [nx * reach, cy, nz * reach]);
+	if (point[1] < FLOOR) {
+		// That side is under the floor (a limb lying on the stage): the string goes over it instead.
+		const over = fromPiece(f, [-nx * reach, cy, -nz * reach]);
+		if (over[1] > point[1]) point = over;
+		if (point[1] < FLOOR) point[1] = FLOOR;
+	}
+	return { s, depth, point };
 }
 
 /**
@@ -173,6 +183,9 @@ export function pushOut(f, x, margin = STRING_MARGIN) {
 	const nx = rho > 1e-6 ? u[0] / rho : 1, nz = rho > 1e-6 ? u[2] / rho : 0;
 	return fromPiece(f, [nx * reach, u[1], nz * reach]);
 }
+
+/** A point on piece `piece` (index into the frame, f = frame[piece]) as a via the router can carry forward. */
+export const viaOn = (f, piece, point) => ({ piece, at: toPiece(f, point) });
 
 /** Distance from point p to the segment a-b. */
 export const distanceToSegment = (p, a, b) => pointSegDist(p, a, b);
