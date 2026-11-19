@@ -45,6 +45,8 @@ const TURN_REACH = 0.25;           // how far from the tie (m, along the string)
 const TURN_SLACK = 0.05;           // spare length (m) from which it does so fully
 const HEAL_DEPTH = -0.0005;        // how far into its own limb (m, negative) the end of a string may cut before it is laid round it ...
 const HEAL_REACH = 0.06;           // ... and the furthest sideways (m) that may move a point; beyond it the easing has to do
+const STEADY = 0.019;              // sideways movement per frame (m) that needs no run-up ...
+const GROW = 2.4;                  // ... and how many times last frame's movement is allowed beyond that
 const CATCH_UP = 0.5;              // share of the gap to the chain that what is drawn closes per frame when it is far behind
 const PINCH = -0.0015;             // a string squeezed between two pieces may be this close to the wood (m; negative: a touch inside, where two limbs press together)
 const EASE = 0.003;                 // how far a squeezed string works its way out of the gap per step (m)
@@ -82,6 +84,8 @@ export class StringShape {
 		this.ownPiece = -1;
 		this.shift = new Float32Array(size);    // how far each point of the chain was carried along with the ends this update
 		this.shiftOut = new Float32Array(size); // ... and each drawn point
+		this.ref = new Float32Array(size);      // what was drawn last time, carried along with the two ends
+		this.swing = 0;                         // how far the drawn string moved sideways last time (m)
 	}
 
 	/**
@@ -164,6 +168,8 @@ export class StringShape {
 			}
 		}
 		const shift = this.shift, shiftOut = this.shiftOut;
+		const ref = this.ref;
+		for (let k = 0; k <= n; k++) { const u = k / n, o = k * 3; ref[o] = out[o] + ax + (bx - ax) * u; ref[o + 1] = out[o + 1] + ay + (by - ay) * u; ref[o + 2] = out[o + 2] + az + (bz - az) * u; }
 		if (ax || ay || az || bx || by || bz || turn) {
 			const each = want / n;
 			const tx = end[0] - bx, ty = end[1] - by, tz = end[2] - bz;   // where the tie point was
@@ -209,7 +215,7 @@ export class StringShape {
 			const change = Math.abs(top[0] - mark[0]) + Math.abs(top[1] - mark[1]) + Math.abs(top[2] - mark[2])
 				+ Math.abs(end[0] - mark[3]) + Math.abs(end[1] - mark[4]) + Math.abs(end[2] - mark[5])
 				+ Math.abs(slack - mark[6]) + Math.abs(where - mark[7]);
-			if (change < WAKE) { this._keep(pieces); return out; }
+			if (change < WAKE) { this.swing = 0; this._keep(pieces); return out; }
 			this.asleep = false;
 			this.still = 0;
 		}
@@ -448,6 +454,41 @@ export class StringShape {
 		// What is drawn may trail the chain by a frame or two, but not through the limb the
 		// string is tied to.
 		if (own.length && !broken) this._heal(out, null, DRAWN_MARGIN);
+		// And no leaps. However the chain got where it is, what is drawn moves sideways at most
+		// 2.4 times as far as it did the frame before, or STEADY, whichever is more. A string
+		// set moving builds up to any speed within a few frames, but it cannot be in one place
+		// and somewhere else the next.
+		const most = Math.max(STEADY, GROW * this.swing);
+		for (let k = 1; k <= (broken ? n : n - 1); k++) {
+			const o = k * 3;
+			const dx = out[o] - ref[o], dy = out[o + 1] - ref[o + 1], dz = out[o + 2] - ref[o + 2];
+			const d = Math.hypot(dx, dy, dz);
+			if (d <= most) continue;
+			const f = most / d;
+			out[o] = ref[o] + dx * f; out[o + 1] = Math.max(FLOOR, ref[o + 1] + dy * f); out[o + 2] = ref[o + 2] + dz * f;
+		}
+		// Held back like that, the end of the string may be left cutting its own limb. Then the
+		// way round the limb from where it now is — if that is no leap either.
+		let swing = this._swing();
+		if (own.length && !broken) {
+			_held.set(out);
+			if (this._heal(out, null, DRAWN_MARGIN, HEAL_REACH)) {
+				swing = this._swing();
+				if (swing > most) {
+					// Too far for one frame: as much of the way there as is not a leap.
+					_there.set(out);
+					let lo = 0, hi = 1;
+					for (let step = 0; step < 5; step++) {
+						const t = (lo + hi) / 2;
+						for (let k = 3; k < n * 3; k++) out[k] = _held[k] + (_there[k] - _held[k]) * t;
+						if (this._swing() > most) hi = t; else lo = t;
+					}
+					for (let k = 3; k < n * 3; k++) out[k] = _held[k] + (_there[k] - _held[k]) * lo;
+					swing = this._swing();
+				}
+			}
+		}
+		this.swing = swing;
 		out[0] = top[0]; out[1] = Math.max(FLOOR, top[1]); out[2] = top[2];
 		if (!broken) { out[n * 3] = end[0]; out[n * 3 + 1] = Math.max(FLOOR, end[1]); out[n * 3 + 2] = end[2]; }
 
@@ -469,7 +510,7 @@ export class StringShape {
 	 * between them are the route's own legs, which do not cut the wood. Exact, where the
 	 * easing in the steps is gradual. Returns whether it had to.
 	 */
-	_heal(points, follow, margin) {
+	_heal(points, follow, margin, reach = HEAL_REACH) {
 		const { n } = this;
 		const wood = this.own;
 		const first = Math.max(0, n - TIE_LINKS);
@@ -523,7 +564,7 @@ export class StringShape {
 					far = Math.max(far, off);
 				}
 			}
-			if (far > HEAL_REACH) { k = stop - 1; continue; }
+			if (far > reach) { k = stop - 1; continue; }
 			for (let o = (start + 1) * 3; o < stop * 3; o++) {
 				points[o] = _round[o];
 				if (follow) follow[o] = _round[o];
@@ -532,6 +573,23 @@ export class StringShape {
 			k = stop - 1;
 		}
 		return healed;
+	}
+
+	/** How far what is drawn has moved sideways since last time: the furthest any of its points is from the string as it was. */
+	_swing() {
+		const { n, out, ref } = this;
+		let swing = 0;
+		for (let k = 1; k < n; k++) {
+			_point[0] = out[k * 3]; _point[1] = out[k * 3 + 1]; _point[2] = out[k * 3 + 2];
+			let d = Infinity;
+			for (let j = 0; j < n && d > 0; j++) {
+				_a[0] = ref[j * 3]; _a[1] = ref[j * 3 + 1]; _a[2] = ref[j * 3 + 2];
+				_b[0] = ref[j * 3 + 3]; _b[1] = ref[j * 3 + 4]; _b[2] = ref[j * 3 + 5];
+				d = Math.min(d, distanceToSegment(_point, _a, _b));
+			}
+			if (d > swing) swing = d;
+		}
+		return swing;
 	}
 
 	/** Whether link `k` of `points` cuts through one of `wood` (four places along it). */
@@ -726,6 +784,8 @@ const _s = [0, 0, 0];
 const _v = [0, 0, 0];
 const _q = [0, 0, 0, 1];
 const _round = new Float32Array(1203);
+const _there = new Float32Array(1203);
+const _held = new Float32Array(1203);
 const _none = new Set();
 const _a = [0, 0, 0];
 const _b = [0, 0, 0];

@@ -133,9 +133,9 @@ function several(label, driveFrom, starts, options) {
 	};
 	const r = several('gentle tilting', tilt, [0, 13, 33, 58, 71, 95], { settle: 3, seconds: 20 });
 	// A loose string following a swinging foot moves a centimetre or two a frame without
-	// jumping. What is left, about once a minute, is a string squeezed out of the crook of a
-	// closing knee or elbow in one frame: two to three centimetres, and nowhere else to go.
-	check('strings do not jump in gentle play', r.snaps <= r.minutes && r.worstSnap < 0.03 && r.worst < 0.035, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min${r.snaps ? ` (largest ${(r.worstSnap * 1000).toFixed(0)} mm)` : ''}, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
+	// jumping, and what is drawn may not leap at all (string-shape.js limits how fast its
+	// sideways movement can grow from one frame to the next).
+	check('strings do not jump in gentle play', r.snaps === 0 && r.worst < 0.035, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
 	check('nor pass through the puppet', r.ownShare < 0.0005 && r.otherShare < 0.002, `own limb ${(r.ownShare * 100).toFixed(3)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
 	check('nor go below the floor', r.under <= 0 && r.resets === 0, `lowest ${(r.under * 1000).toFixed(1)} mm under`);
 }
@@ -150,10 +150,11 @@ function several(label, driveFrom, starts, options) {
 		sim.ctl.pull[4] = 0.3 + 0.3 * Math.sin(T * 2); sim.ctl.pull[5] = 0.3 + 0.3 * Math.cos(T * 1.6); sim.ctl.pull[6] = 0.2 + 0.2 * Math.sin(T * 2.4);
 	};
 	const r = several('thrown about', perform, [0, 13, 33, 58, 71, 95], { settle: 2, seconds: 20 });
-	// A limb moving six centimetres a frame takes a string six centimetres with it, and that
-	// is right. What must stay rare is a string appearing somewhere else, or sitting in a limb.
-	check('strings seldom jump even when the puppet is thrown about', r.snaps <= 3 * r.minutes, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min${r.snaps ? ` (largest ${(r.worstSnap * 1000).toFixed(0)} mm)` : ''}, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
-	check('and are next to never in their own limb, rarely in another', r.ownShare < 0.0003 && r.otherShare < 0.01, `own limb ${(r.ownShare * 100).toFixed(3)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
+	// A limb moving six centimetres a frame takes a string with it, and a string may build up
+	// to that speed over a few frames; what it may not do, even now, is leap. Nor sit in the
+	// limb it is tied to, bar a frame in tens of thousands; other limbs it still clips now and then.
+	check('strings do not jump even when the puppet is thrown about', r.snaps === 0, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
+	check('and are next to never in their own limb, rarely in another', r.ownShare < 0.0002 && r.otherShare < 0.01, `own limb ${(r.ownShare * 100).toFixed(3)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
 	check('nor below the floor', r.under <= 0 && r.resets === 0, `lowest ${(r.under * 1000).toFixed(1)} mm under`);
 }
 
