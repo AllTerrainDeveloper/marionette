@@ -89,6 +89,7 @@ export class StringShape {
 		this.shiftOut = new Float32Array(size); // ... and each drawn point
 		this.ref = new Float32Array(size);      // what was drawn last time, carried along with the two ends
 		this.swing = 0;                         // how far the drawn string moved sideways last time (m)
+		this.rode = 0;                          // how often its end has had to go round with a jolted limb (see update)
 		this.rigid = new Float32Array(size);    // the end of what was drawn last time, carried round with the limb it is tied to
 		this.rigidFrom = links;                 // ... from this point on
 	}
@@ -184,6 +185,7 @@ export class StringShape {
 				const r = qRot(spin, _v);
 				rigid[o] = end[0] + r[0]; rigid[o + 1] = Math.max(FLOOR, end[1] + r[1]); rigid[o + 2] = end[2] + r[2];
 			}
+			rigid[n * 3] = end[0]; rigid[n * 3 + 1] = end[1]; rigid[n * 3 + 2] = end[2];
 		}
 		const ref = this.ref;
 		for (let k = 0; k <= n; k++) { const u = k / n, o = k * 3; ref[o] = out[o] + ax + (bx - ax) * u; ref[o + 1] = out[o + 1] + ay + (by - ay) * u; ref[o + 2] = out[o + 2] + az + (bz - az) * u; }
@@ -529,14 +531,17 @@ export class StringShape {
 		}
 		// Still cutting it: then the stretch in trouble stays where it was on the limb a frame
 		// ago, when it was clear — widened point by point until the whole end of the string is
-		// clear of the limb, and only if that is no leap either.
+		// clear of the limb. The narrowest stretch that is no leap is taken; failing that, the
+		// narrowest that is clear. That last case is a limb jolted round faster than the limiter
+		// lets a string move: the end of the string goes round with the limb it is tied to. Seen
+		// from the limb it has not moved at all, and the only other choice is to draw it inside.
 		if (own.length && !broken && this.rigidFrom < n) {
 			const first = Math.max(0, n - this.tie);
 			let c0 = -1, c1 = -1;
 			for (let k = first; k < n; k++) if (this._cuts(out, k, own)) { if (c0 < 0) c0 = k; c1 = k + 1; }
 			if (c0 >= 0) {
 				_held.set(out);
-				let done = false;
+				let done = false, ridden = -1, riddenSwing = 0;
 				for (let widen = 0; widen <= this.tie && !done; widen++) {
 					const from = Math.max(this.rigidFrom, c0 - widen), to = Math.min(n - 1, c1 + widen);
 					for (let k = from * 3; k < (to + 1) * 3; k++) out[k] = rigid[k];
@@ -545,10 +550,12 @@ export class StringShape {
 					if (clear) {
 						const stayed = this._swing();
 						if (stayed <= most + SWING_SLOP) { swing = stayed; done = true; }
+						else if (ridden < 0) { ridden = widen; _there.set(out); riddenSwing = stayed; }
 					}
+					if (!done) out.set(_held.subarray(0, out.length));
 					if (from === this.rigidFrom && to === n - 1) break;
 				}
-				if (!done) out.set(_held.subarray(0, out.length));
+				if (!done && ridden >= 0) { out.set(_there.subarray(0, out.length)); swing = riddenSwing; this.rode++; }
 			}
 		}
 		// The same for any other limb, anywhere along the string: a stretch the limiter has left
@@ -677,7 +684,7 @@ export class StringShape {
 		return healed;
 	}
 
-	/** How far what is drawn has moved sideways since last time: the furthest any of its points is from the string as it was. */
+	/** How far what is drawn has moved sideways since last time: the furthest any of its points is from the string as it was, carried along with its two ends. */
 	_swing() {
 		const { n, out, ref } = this;
 		let swing = 0;
