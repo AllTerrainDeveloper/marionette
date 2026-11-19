@@ -70,7 +70,7 @@ run(3, () => { send(0, {}); send(1, { quat: M.qFromYPR(0, 0, 0.6) }); });
 const mainRoll = M.qToYPR(sim.bars[0].quat)[2], limbRoll = M.qToYPR(sim.bars[1].quat)[2];
 check('second phone drives the limb bar independently', Math.abs(mainRoll) < 0.05 && Math.abs(limbRoll - 0.6) < 0.08, `main ${mainRoll.toFixed(2)} limb ${limbRoll.toFixed(2)}`);
 const kneeL = sim.bodyPos(ix.shinL)[1], kneeR = sim.bodyPos(ix.shinR)[1];
-check('rolling the limb bar lifts one leg', Math.abs(sim.bodyPos(ix.footL)[1] - sim.bodyPos(ix.footR)[1]) > 0.03, `shin heights ${kneeL.toFixed(3)} / ${kneeR.toFixed(3)}`);
+check('rolling the limb bar lifts one leg', Math.abs(kneeL - kneeR) > 0.03, `shin heights ${kneeL.toFixed(3)} / ${kneeR.toFixed(3)}`);
 
 // Arms mode with two phones: each phone is a hand.
 ctl.setMode('arms');

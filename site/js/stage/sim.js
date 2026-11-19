@@ -1,9 +1,14 @@
 // Authoritative puppet simulation (desktop only).
 //
-// Rapier owns rigid bodies, joints, joint limits, joint motors (the active
-// ragdoll) and contacts. On top of that this file adds:
+// The dynamics are solved by Augmented Vertex Block Descent (avbd.js): rigid
+// bodies, joints with limits, the muscle-tone motors, contacts with friction
+// and the inextensible strings all sit in one implicit solve per step.
+// Rapier is kept for geometry only — convex hulls, their mass properties and
+// closest-point queries between them; it never steps the puppet.
+//
+// On top of the solver this file adds:
 //   - the kinematic control rig (two bars with string handles),
-//   - tension-only strings solved as soft constraints (they pull, never push),
+//   - string routing around the limbs (string-path.js),
 //   - two-bone IK that feeds joint-motor targets plus a gentle effector force,
 //   - a procedural balance assist,
 //   - guards that keep violent input from blowing the simulation up.
@@ -11,20 +16,35 @@
 // No DOM or Three.js in here, so the same code runs in the Node stability test.
 
 import * as M from '../shared/math.js';
-import { RIG, LAYERS, indexById } from '../shared/rig-config.js';
+import { RIG, indexById } from '../shared/rig-config.js';
 import { SHAPES, surfacePoints } from '../shared/puppet-shapes.js';
 import { buildWrapProxies, effectiveAttach, stringExclusions, wrapFrame, stringPath } from '../shared/string-path.js';
+import { Solver, Joint, Contact, StringForce, jointAngles } from './avbd.js';
 
-/** Default fixed timestep. Many small steps with few solver iterations beat few large steps with many. */
-export const DT = 1 / 240;
-export const DEFAULTS = { hz: 240, iterations: 5, stringPasses: 4, warmStart: 0.9, stringCollision: true };
+/**
+ * hz / iterations: fixed step rate and solver sweeps per step.
+ * alpha: stabilisation (share of existing constraint error left for later steps);
+ * gamma: warm-start decay; betaLin / betaAng: penalty ramps for length and angle rows;
+ * ratio: how far a penalty may ramp above its base (see avbd.js).
+ * stringCollision: strings wrap around the limbs.
+ *
+ * These follow the authors' 3D reference solver (alpha 0.99, no separate
+ * post-stabilisation pass) except that angle rows keep a fixed penalty: with the
+ * puppet's very light clavicles and hands resting on their joint limits, ramping
+ * those made a standing puppet fidget.
+ */
+export const DEFAULTS = { hz: 240, iterations: 5, postStabilize: false, alpha: 0.99, gamma: 0.99, betaLin: 1e6, betaAng: 0, ratio: 100, stringCollision: true };
+export const DT = 1 / DEFAULTS.hz;
 
-const ANG = [3, 4, 5]; // Rapier JointAxis.AngX / AngY / AngZ
-const MOTOR_ACCELERATION = 0;
 const MAX_LINVEL = 14;
 const MAX_ANGVEL = 42;
-
-const xyz = (v) => ({ x: v[0], y: v[1], z: v[2] });
+const LINEAR_DAMPING = 0.15;      // air drag, 1/s
+const ANGULAR_DAMPING = 0.6;
+const CONTACT_REACH = 0.03;       // contacts are created this far ahead of touching (m)
+const FLOOR_FRICTION = { foot: 1.0, other: 0.7 };
+const BODY_FRICTION = 0.35;
+const ANGULAR_LEVER = 0.1;        // typical lever arm (m): sets the base stiffness of angle rows
+const REEL_SPEED = 2;            // fastest a string is taken in when shortened or re-tied (m/s)
 
 export class PuppetSim {
 	constructor(RAPIER, rig = RIG, opts = {}) {
@@ -67,6 +87,7 @@ export class PuppetSim {
 		this.wrapProxies = buildWrapProxies(rig.bodies);
 		this._wrapFrame = [];
 		this._noBodies = [];
+		this._v = [0, 0, 0];
 		this._build();
 		this.setStrings(rig.strings);
 		this.reset();
@@ -77,79 +98,93 @@ export class PuppetSim {
 	_build() {
 		const R = this.R;
 		const rig = this.rig;
-		const world = (this.world = new R.World({ x: 0, y: -rig.gravity, z: 0 }));
-		world.timestep = this.dt;
-		world.integrationParameters.numSolverIterations = this.opts.iterations;
-
-		// Puppet parts collide with the floor and with each other.
-		const groups = (def) => ((LAYERS.body << 16) | LAYERS.floor | (def.collide === false ? 0 : LAYERS.body)) >>> 0;
-
-		const floor = world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(0, -0.5, 0));
-		world.createCollider(
-			R.ColliderDesc.cuboid(30, 0.5, 30).setFriction(0.9).setRestitution(0.05).setCollisionGroups(((LAYERS.floor << 16) | 0xffff) >>> 0),
-			floor
-		);
+		const dt = this.dt;
+		const o = this.opts;
+		// Geometry only: this world is never stepped.
+		const world = (this.world = new R.World({ x: 0, y: 0, z: 0 }));
+		const solver = (this.solver = new Solver({
+			dt, iterations: o.iterations, alpha: o.alpha, postStabilize: o.postStabilize, gamma: o.gamma, betaLin: o.betaLin, betaAng: o.betaAng, slack: o.slack, slackAng: o.slackAng, correctLin: o.correctLin, correctAng: o.correctAng, ratio: o.ratio, gravity: [0, -rig.gravity, 0],
+		}));
 
 		// Each body's colliders are convex hulls of the same turned pieces that are drawn
 		// (puppet-shapes.js). Mass is spread evenly through them, so the centre of mass and
 		// the inertia tensor are those of the real shape.
-		this.bodies = rig.bodies.map((def) => {
-			const body = world.createRigidBody(
-				R.RigidBodyDesc.dynamic()
-					.setTranslation(def.pos[0], def.pos[1], def.pos[2])
-					.setLinearDamping(0.2)
-					.setAngularDamping(0.8)
-					.setCanSleep(false)
-			);
-			const isFoot = def.id.startsWith('foot');
-			const colliders = [];
+		this.pieces = [];
+		this.bodies = rig.bodies.map((def, index) => {
+			const rb = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(def.pos[0], def.pos[1], def.pos[2]).setCanSleep(false));
+			const shapes = [];
 			for (const piece of SHAPES[def.id] || []) {
-				const desc = R.ColliderDesc.convexHull(new Float32Array(surfacePoints(piece)));
+				const points = surfacePoints(piece);
+				const desc = R.ColliderDesc.convexHull(new Float32Array(points));
 				if (!desc) continue;
-				desc.setDensity(1).setFriction(isFoot ? 1.1 : 0.5).setRestitution(0.08).setCollisionGroups(groups(def));
-				colliders.push(world.createCollider(desc, body));
+				shapes.push({ collider: world.createCollider(desc.setDensity(1), rb), points });
 			}
-			if (!colliders.length) {
-				colliders.push(world.createCollider(R.ColliderDesc.ball(0.05).setDensity(1).setCollisionGroups(groups(def)), body));
+			rb.recomputeMassPropertiesFromColliders();
+			const density = def.mass / rb.mass();
+			for (const shape of shapes) shape.collider.setDensity(density);
+			rb.recomputeMassPropertiesFromColliders();
+			const com = rb.localCom();
+			const inertia = rb.principalInertia();
+			const frame = rb.principalInertiaLocalFrame();
+			const localCom = [com.x, com.y, com.z];
+			rb.setBodyType(R.RigidBodyType.KinematicPositionBased, false);
+
+			const body = solver.addBody(def.mass, [inertia.x, inertia.y, inertia.z], [frame.x, frame.y, frame.z, frame.w], M.add(def.pos, localCom));
+			const isFoot = def.id.startsWith('foot');
+			let reach = 0;
+			for (const shape of shapes) {
+				// Hull vertices relative to the centre of mass, and a bounding sphere around them.
+				const n = shape.points.length / 3;
+				const verts = new Float64Array(n * 3);
+				const centre = [0, 0, 0];
+				for (let k = 0; k < n * 3; k++) { verts[k] = shape.points[k] - localCom[k % 3]; centre[k % 3] += verts[k] / n; }
+				let radius = 0;
+				for (let k = 0; k < n; k++) radius = Math.max(radius, Math.hypot(verts[k * 3] - centre[0], verts[k * 3 + 1] - centre[1], verts[k * 3 + 2] - centre[2]));
+				reach = Math.max(reach, M.len(centre) + radius);
+				this.pieces.push({ index: this.pieces.length, body: index, collider: shape.collider, verts, count: n, centre, radius, floorMu: isFoot ? FLOOR_FRICTION.foot : FLOOR_FRICTION.other, world: [0, 0, 0] });
 			}
-			body.recomputeMassPropertiesFromColliders();
-			const density = def.mass / body.mass();
-			for (const collider of colliders) collider.setDensity(density);
-			body.recomputeMassPropertiesFromColliders();
-			const com = body.localCom();
-			const inertia = body.principalInertia();
-			const frame = body.principalInertiaLocalFrame();
-			return {
-				def, body,
-				invMass: 1 / body.mass(),
-				localCom: [com.x, com.y, com.z],
-				invInertia: [1 / inertia.x, 1 / inertia.y, 1 / inertia.z],
-				inertiaFrame: [frame.x, frame.y, frame.z, frame.w],
-			};
+			return { def, rb, body, localCom, reach, collide: def.collide !== false };
 		});
 
+		const jointed = new Set();
+		const invAbout = (i, axis) => { const out = [0, 0, 0]; this.bodies[i].body.invInertia(axis[0], axis[1], axis[2], out); return M.dot(out, axis); };
 		this.joints = rig.joints.map((def) => {
 			const a = this.bodyIx[def.a];
 			const b = this.bodyIx[def.b];
+			jointed.add(a < b ? a * 64 + b : b * 64 + a);
 			const anchorA = M.sub(def.anchor, rig.bodies[a].pos);
 			const anchorB = M.sub(def.anchor, rig.bodies[b].pos);
-			const data =
-				def.type === 'hinge'
-					? R.JointData.revolute(xyz(anchorA), xyz(anchorB), xyz(def.axis))
-					: R.JointData.spherical(xyz(anchorA), xyz(anchorB));
-			const joint = world.createImpulseJoint(data, this.bodies[a].body, this.bodies[b].body, true);
-			joint.setContactsEnabled(false);
-			const raw = joint.rawSet;
-			const axes = def.type === 'hinge' ? [ANG[0]] : ANG;
-			axes.forEach((axis, i) => {
-				const lo = def.type === 'hinge' ? def.min : def.min[i];
-				const hi = def.type === 'hinge' ? def.max : def.max[i];
-				raw.jointSetLimits(joint.handle, axis, lo, hi);
-				raw.jointConfigureMotorModel(joint.handle, axis, MOTOR_ACCELERATION);
-				raw.jointSetMotorMaxForce(joint.handle, axis, def.torque);
-			});
-			return { def, joint, raw, axes, a, b, anchorA, anchorB, applied: null, ik: null, lockTarget: null };
+			const hinge = def.type === 'hinge';
+			const lo = hinge ? [def.min] : def.min;
+			const hi = hinge ? [def.max] : def.max;
+			// The inertia the two bodies present to a torque about each joint axis. Motor gains
+			// are given per unit of it ("acceleration based"), so tone feels alike on a heavy
+			// thigh and a light hand.
+			const inertia = lo.map((_, n) => 1 / (invAbout(a, [n === 0 ? 1 : 0, n === 1 ? 1 : 0, n === 2 ? 1 : 0]) + invAbout(b, [n === 0 ? 1 : 0, n === 1 ? 1 : 0, n === 2 ? 1 : 0])));
+			const mass = 1 / (1 / rig.bodies[a].mass + 1 / rig.bodies[b].mass);
+			const force = new Joint(
+				a, b, M.sub(anchorA, this.bodies[a].localCom), M.sub(anchorB, this.bodies[b].localCom), hinge, lo, hi,
+				mass / (dt * dt), Math.max(Math.min(...inertia), mass * (o.angularLever || ANGULAR_LEVER) ** 2) / (dt * dt)
+			);
+			force.mmax = def.torque;
+			return { def, force, inertia, lo, hi, a, b, anchorA, anchorB, ik: null, lockTarget: null };
 		});
+
+		// Which pieces may touch: every pair of parts that are not directly jointed.
+		this.pairs = [];
+		for (let i = 0; i < this.bodies.length; i++) {
+			for (let j = i + 1; j < this.bodies.length; j++) {
+				if (jointed.has(i * 64 + j) || !this.bodies[i].collide || !this.bodies[j].collide) continue;
+				const list = [];
+				for (const pa of this.pieces) if (pa.body === i) for (const pb of this.pieces) if (pb.body === j) list.push([pa, pb]);
+				const mass = 1 / (1 / rig.bodies[i].mass + 1 / rig.bodies[j].mass);
+				this.pairs.push({ i, j, list, reach: this.bodies[i].reach + this.bodies[j].reach + CONTACT_REACH, stiffness: mass / (dt * dt) });
+			}
+		}
+		this.contacts = new Map();
+		this.forces = [];
+		this._hit = null;
+		this._picked = [];
 
 		this.effectors = rig.effectors.map((def) => {
 			const root = this.joints[this.jointIx[def.root]];
@@ -185,7 +220,8 @@ export class PuppetSim {
 			const restAttach = M.add(rig.bodies[body].pos, at);
 			const rest = Number.isFinite(def.length) ? def.length : M.dist(restHandle, restAttach) + (def.slack || 0);
 			const excluded = stringExclusions(def, at, rig.bodies, this.wrapProxies);
-			this.strings.push({ def, body, handle, at, rest, excluded, tension: 0, lambda: 0, broken: false, over: 0, path: null });
+			const force = new StringForce(rig.bodies[body].mass / (this.dt * this.dt));
+			this.strings.push({ def, body, handle, at, rest, excluded, force, local: M.sub(at, this.bodies[body].localCom), tension: 0, broken: false, over: 0, path: null });
 		}
 		this.tension = new Float32Array(this.strings.length);
 	}
@@ -201,14 +237,14 @@ export class PuppetSim {
 		});
 		const dx = this.bars[0].pos[0] - rig.home[0];
 		const dz = this.bars[0].pos[2] - rig.home[2];
-		const zero = { x: 0, y: 0, z: 0 };
-		this.bodies.forEach(({ def, body }) => {
-			body.setTranslation({ x: def.pos[0] + dx, y: def.pos[1], z: def.pos[2] + dz }, true);
-			body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
-			body.setLinvel(zero, true);
-			body.setAngvel(zero, true);
+		this.bodies.forEach(({ def, body, localCom }) => {
+			body.x[0] = def.pos[0] + dx + localCom[0]; body.x[1] = def.pos[1] + localCom[1]; body.x[2] = def.pos[2] + dz + localCom[2];
+			body.q[0] = body.q[1] = body.q[2] = 0; body.q[3] = 1;
+			body.v.fill(0); body.w.fill(0); body.prevV.fill(0);
 		});
-		this.strings.forEach((s) => { s.broken = false; s.over = 0; s.tension = 0; s.lambda = 0; });
+		this.contacts.clear();
+		for (const j of this.joints) j.force.reset();
+		this.strings.forEach((s) => { s.broken = false; s.over = 0; s.tension = 0; s.force.release(); });
 		this.handleOff.forEach((o, i) => { o[0] = c.handleOffset[i][0]; o[1] = c.handleOffset[i][1]; o[2] = c.handleOffset[i][2]; });
 		this._placeHandles(0);
 		this._readBack(true);
@@ -222,16 +258,24 @@ export class PuppetSim {
 	// ----------------------------------------------------------------- step
 
 	step() {
-		this._updateRig(this.dt);
+		const dt = this.dt;
+		this._updateRig(dt);
 		this._solveIK();
 		this._applyMotors();
-		this._applyStrings(this.dt);
-		this._applyEffectorForces(this.dt);
-		this._applyBalance(this.dt);
+		this._applyEffectorForces(dt);
+		this._applyBalance(dt);
 		this._applyImpulses();
-		this.world.step();
+
+		const forces = this.forces;
+		forces.length = 0;
+		for (const j of this.joints) forces.push(j.force);
+		this._routeStrings(forces);
+		this._collide(forces);
+		this.solver.step(forces);
+
+		this._afterStrings(dt);
 		this._readBack(false);
-		this.time += this.dt;
+		this.time += dt;
 	}
 
 	bodyPos(i) { const p = this.pos; i *= 3; return [p[i], p[i + 1], p[i + 2]]; }
@@ -278,127 +322,227 @@ export class PuppetSim {
 
 	// -------------------------------------------------------------- strings
 
-	_pointVel(body, r) {
-		const lv = body.linvel();
-		const av = body.angvel();
-		return [
-			lv.x + av.y * r[2] - av.z * r[1],
-			lv.y + av.z * r[0] - av.x * r[2],
-			lv.z + av.x * r[1] - av.y * r[0],
-		];
+	/** Velocity of body i's material at the world point p. */
+	_pointVel(i, p) {
+		const b = this.bodies[i].body;
+		return b.pointVelocity(p[0] - b.x[0], p[1] - b.x[1], p[2] - b.x[2], [0, 0, 0]);
 	}
 
 	bodyCom(i) { const p = this.com; i *= 3; return [p[i], p[i + 1], p[i + 2]]; }
 
 	/**
-	 * How readily body i responds to a wrench: a force G through its centre of mass plus
-	 * a torque tau (world frame). Returns G.M^-1.G + tau.I^-1.tau, the inverse effective mass.
-	 */
-	_invMassWrench(i, G, tau) {
-		const b = this.bodies[i];
-		const local = M.qRot(M.qConj(M.qMul(this.bodyQuat(i), b.inertiaFrame)), tau);
-		return b.invMass * M.dot(G, G) + local[0] * local[0] * b.invInertia[0] + local[1] * local[1] * b.invInertia[1] + local[2] * local[2] * b.invInertia[2];
-	}
-
-	/**
-	 * Tension-only strings as soft unilateral length constraints.
-	 *
-	 * Each string keeps an accumulated impulse (its dual variable) that is warm
-	 * started from the previous step and refined over a few Gauss-Seidel passes,
-	 * with the total clamped to [0, max tension]. This is the accumulated /
-	 * warm-started dual update of Augmented Vertex Block Descent (Giles, Diaz,
-	 * Yuksel, SIGGRAPH 2025) written in velocity form with Catto's soft-constraint
-	 * coefficients, so it layers on Rapier's own substepping (TGS-soft) solver.
-	 * A slack string gets a speculative bound instead, so it comes taut without a
-	 * one-step snap.
+	 * Strings are inextensible and only ever pull: one hard, one-sided constraint on
+	 * the length of the string's path, solved with everything else (avbd.js).
 	 *
 	 * Strings collide with the puppet. A string is a polyline handle -> via points
 	 * -> attachment, where each via point rests on the surface of a limb the
-	 * straight line would have cut through (string-path.js). The constraint is on
-	 * the polyline's total length, and a via point is a frictionless pulley: with
-	 * unit directions d[i] along the segments, tension T pulls the attachment back
-	 * along the last segment and presses on each wrapped limb with
-	 * T * (d[i] - d[i-1]). So a limb deflects the string, and the string pushes
+	 * straight line would have cut through (string-path.js). A via point is a
+	 * frictionless pulley, so a limb deflects the string and the string presses on
 	 * the limb.
 	 */
-	_applyStrings(dt) {
+	_routeStrings(forces) {
 		const c = this.ctl;
 		const gain = c.stringGain;
-		const { stringPasses, warmStart, stringCollision } = this.opts;
-		const active = this._active || (this._active = []);
-		active.length = 0;
-		const frame = stringCollision ? wrapFrame(this.wrapProxies, this.pos, this.quat, this._wrapFrame) : this._noBodies;
-
+		const frame = this.opts.stringCollision ? wrapFrame(this.wrapProxies, this.pos, this.quat, this._wrapFrame) : this._noBodies;
 		this.strings.forEach((s, i) => {
-			s.tension = 0;
-			this.tension[i] = 0;
 			s.path = null;
-			if (!s.def.enabled || s.broken || gain < 0.001) { s.lambda = 0; return; }
+			if (!s.def.enabled || s.broken || gain < 0.001) { s.force.release(); return; }
 			const attach = M.add(this.bodyPos(s.body), M.qRot(this.bodyQuat(s.body), s.at));
 			const path = stringPath(this.handleAt(s.handle), attach, frame, s.excluded);
-			if (path.length < 1e-6) { s.lambda = 0; return; }
+			if (path.length < 1e-6) { s.force.release(); return; }
 			s.path = path;
-
-			// Per moving point on the path: the body it sits on, its lever arm, and the
-			// direction g an impulse of unit tension pushes it in.
 			const pts = path.points;
 			const n = pts.length - 1;
-			const dirs = [];
-			for (let k = 0; k < n; k++) dirs.push(M.norm(M.sub(pts[k + 1], pts[k])));
 			const nodes = [];
-			const wrench = new Map();   // per body: net force direction and torque of all its nodes
-			for (let k = 1; k <= n; k++) {
-				const body = k === n ? s.body : path.bodies[k];
-				const g = k === n ? M.scale(dirs[n - 1], -1) : M.sub(dirs[k], dirs[k - 1]);
-				const r = M.sub(pts[k], this.bodyCom(body));
-				nodes.push({ body: this.bodies[body].body, p: pts[k], r, g });
-				const sum = wrench.get(body);
-				const tau = M.cross(r, g);
-				if (sum) { sum.G = M.add(sum.G, g); sum.tau = M.add(sum.tau, tau); } else wrench.set(body, { G: g, tau });
+			for (let k = 1; k < n; k++) {
+				const body = path.bodies[k];
+				nodes.push({ body, local: M.qRot(M.qConj(this.bodyQuat(body)), M.sub(pts[k], this.bodyCom(body))) });
 			}
-			let w = 0;
-			for (const [body, sum] of wrench) w += this._invMassWrench(body, sum.G, sum.tau);
-			const j = s.handle * 3;
-			const k = s.def.k * gain;
-			const soft = s.def.c * gain + dt * k;
-			s.i = i; s.nodes = nodes; s.w = w;
-			// How fast the handle alone is lengthening the string.
-			s.handleRate = -(this.handleVel[j] * dirs[0][0] + this.handleVel[j + 1] * dirs[0][1] + this.handleVel[j + 2] * dirs[0][2]);
-			s.gamma = 1 / (dt * soft);
-			s.maxImpulse = s.def.max * gain * dt;
-			const stretch = path.length - Math.max(0.05, s.rest - c.pull[i]);
-			// Taut: pull back with the spring's bias. Slack: only stop it overshooting its length this step.
-			s.bias = stretch > 0 ? (((dt * k) / soft) * stretch) / dt : stretch / dt;
-			s.acc = 0;
-			if (stretch > 0 && warmStart > 0 && s.lambda > 0) {
-				s.acc = Math.min(s.lambda * warmStart, s.maxImpulse);
-				for (const node of nodes) node.body.applyImpulseAtPoint(xyz(M.scale(node.g, s.acc)), xyz(node.p), true);
-			}
-			active.push(s);
+			nodes.push({ body: s.body, local: s.local });
+			// A string that is suddenly much too short (pulled in, or tied back on while the
+			// puppet lies on the floor) is taken in at a finite speed rather than in one step.
+			const target = Math.max(0.05, s.rest - c.pull[i]);
+			const from = s.force.active ? s.force.rest : path.length;
+			const rest = from > target ? Math.max(target, from - REEL_SPEED * this.dt) : target;
+			// How much the handle's own motion and the reeling-in lengthen the path this step.
+			const h = s.handle * 3, d = M.norm(M.sub(pts[1], pts[0]));
+			const fresh = -(this.handleVel[h] * d[0] + this.handleVel[h + 1] * d[1] + this.handleVel[h + 2] * d[2]) * this.dt + (from > rest ? from - rest : 0);
+			s.force.route(this.handleAt(s.handle), nodes, rest, s.def.max * gain, fresh);
+			forces.push(s.force);
 		});
+	}
 
-		for (let pass = 0; pass < stringPasses; pass++) {
-			for (const s of active) {
-				let lengthening = s.handleRate;
-				for (const node of s.nodes) lengthening -= M.dot(this._pointVel(node.body, node.r), node.g);
-				const next = M.clamp(s.acc + (lengthening + s.bias - s.gamma * s.acc) / (s.w + s.gamma), 0, s.maxImpulse);
-				const delta = next - s.acc;
-				if (delta !== 0) for (const node of s.nodes) node.body.applyImpulseAtPoint(xyz(M.scale(node.g, delta)), xyz(node.p), true);
-				s.acc = next;
-			}
-		}
-
-		for (const s of active) {
-			s.lambda = s.acc;
-			s.tension = s.acc / dt;
-			this.tension[s.i] = s.tension;
-			if (s.def.breakable && s.acc >= s.maxImpulse * 0.98) {
+	_afterStrings(dt) {
+		this.strings.forEach((s, i) => {
+			s.tension = s.force.active ? s.force.tension : 0;
+			this.tension[i] = s.tension;
+			if (s.def.breakable && s.force.active && s.tension >= s.force.max * 0.98) {
 				s.over += dt;
 				if (s.over > 0.2) s.broken = true;
 			} else {
 				s.over = 0;
 			}
+		});
+	}
+
+	// ------------------------------------------------------------- contacts
+
+	/** Pushes the solver's body poses into the geometry world. */
+	_syncGeometry() {
+		const t = this._t || (this._t = { x: 0, y: 0, z: 0 });
+		const r = this._r || (this._r = { x: 0, y: 0, z: 0, w: 1 });
+		for (const { rb, body, localCom } of this.bodies) {
+			const c = M.qRot(body.q, localCom);
+			t.x = body.x[0] - c[0]; t.y = body.x[1] - c[1]; t.z = body.x[2] - c[2];
+			r.x = body.q[0]; r.y = body.q[1]; r.z = body.q[2]; r.w = body.q[3];
+			rb.setTranslation(t, false);
+			rb.setRotation(r, false);
 		}
+		this.world.propagateModifiedBodyPositionsToColliders();
+	}
+
+	/**
+	 * Finds this step's contacts. A contact is created a little before the surfaces
+	 * touch and only starts pushing if they would cross during the step, so fast
+	 * limbs cannot pass through each other between two steps.
+	 */
+	_collide(forces) {
+		const contacts = this.contacts;
+		for (const c of contacts.values()) c.used = false;
+		this._syncGeometry();
+
+		// Piece centres in the world.
+		for (const p of this.pieces) {
+			const b = this.bodies[p.body].body;
+			const w = M.qRot(b.q, p.centre);
+			p.world[0] = b.x[0] + w[0]; p.world[1] = b.x[1] + w[1]; p.world[2] = b.x[2] + w[2];
+		}
+
+		// Floor (the plane y = 0): the lowest hull vertices of each piece near it.
+		const stiffness = (i) => this.rig.bodies[i].mass / (this.dt * this.dt);
+		for (const p of this.pieces) {
+			if (p.world[1] - p.radius > CONTACT_REACH) continue;
+			const b = this.bodies[p.body].body;
+			const picked = this._lowest(p, b);
+			for (const vi of picked) {
+				const key = 100000 + p.index * 1024 + vi;
+				let c = contacts.get(key);
+				const o = vi * 3;
+				if (!c) {
+					c = new Contact(p.body, -1, stiffness(p.body));
+					c.setNormal(0, 1, 0);
+					c.rA[0] = p.verts[o]; c.rA[1] = p.verts[o + 1]; c.rA[2] = p.verts[o + 2];
+					c.mu = p.floorMu;
+					contacts.set(key, c);
+				}
+				if (!c.stick) {
+					// Not held by static friction: friction acts against this step's sliding only.
+					const w = M.qRot(b.q, [p.verts[o], p.verts[o + 1], p.verts[o + 2]]);
+					c.rB[0] = b.x[0] + w[0]; c.rB[1] = 0; c.rB[2] = b.x[2] + w[2];
+				}
+				c.used = true;
+			}
+		}
+
+		// Puppet against itself: closest points between the hulls of nearby pieces.
+		this._hit = this._hit || new this.R.ShapeContact(0, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+		const v = this._v;
+		for (const pair of this.pairs) {
+			const A = this.bodies[pair.i].body, B = this.bodies[pair.j].body;
+			const dx = A.x[0] - B.x[0], dy = A.x[1] - B.x[1], dz = A.x[2] - B.x[2];
+			if (dx * dx + dy * dy + dz * dz > pair.reach * pair.reach) continue;
+			for (const [pa, pb] of pair.list) {
+				const ex = pa.world[0] - pb.world[0], ey = pa.world[1] - pb.world[1], ez = pa.world[2] - pb.world[2];
+				const reach = pa.radius + pb.radius + CONTACT_REACH;
+				if (ex * ex + ey * ey + ez * ez > reach * reach) continue;
+				const hit = pa.collider.contactCollider(pb.collider, CONTACT_REACH, this._hit);
+				if (!hit) continue;
+				const key = pa.index * 64 + pb.index;
+				let c = contacts.get(key);
+				if (!c) {
+					c = new Contact(pair.i, pair.j, pair.stiffness);
+					c.mu = BODY_FRICTION;
+					contacts.set(key, c);
+				}
+				// The normal points from B to A; contact points are stored in each body's own frame.
+				c.setNormal(-hit.normal1.x, -hit.normal1.y, -hit.normal1.z);
+				rotInvInto(A.q, hit.point1.x - A.x[0], hit.point1.y - A.x[1], hit.point1.z - A.x[2], c.rA);
+				rotInvInto(B.q, hit.point2.x - B.x[0], hit.point2.y - B.x[1], hit.point2.z - B.x[2], c.rB);
+				c.depth = -hit.distance;
+				c.used = true;
+			}
+		}
+
+		for (const [key, c] of contacts) {
+			if (c.used) forces.push(c); else contacts.delete(key);
+		}
+	}
+
+	/**
+	 * Up to four hull vertices of a piece at or near the floor. Vertices that carried a
+	 * contact last step are kept while they stay near the floor, so a resting foot keeps
+	 * the same contacts (and their forces) from step to step; the deepest vertex is always
+	 * included, and the rest are chosen well apart.
+	 */
+	_lowest(p, b) {
+		const q = b.q;
+		// Second row of the rotation matrix: world height of a local vector.
+		const rx = 2 * (q[0] * q[1] + q[2] * q[3]), ry = 1 - 2 * (q[0] * q[0] + q[2] * q[2]), rz = 2 * (q[1] * q[2] - q[0] * q[3]);
+		const verts = p.verts, near = this._near || (this._near = []);
+		const height = (k) => b.x[1] + rx * verts[k * 3] + ry * verts[k * 3 + 1] + rz * verts[k * 3 + 2];
+		near.length = 0;
+		let deepest = -1, low = Infinity;
+		for (let k = 0; k < p.count; k++) {
+			const y = height(k);
+			if (y > CONTACT_REACH) continue;
+			near.push(k);
+			if (y < low) { low = y; deepest = k; }
+		}
+		const picked = this._picked;
+		picked.length = 0;
+		const kept = p.kept || (p.kept = []);
+		if (deepest < 0) { kept.length = 0; return picked; }
+		let lowestKept = Infinity;
+		for (const k of kept) {
+			const y = height(k);
+			if (y > CONTACT_REACH) continue;
+			picked.push(k);
+			lowestKept = Math.min(lowestKept, y);
+		}
+		const apart = (k) => {
+			let d = Infinity;
+			for (const m of picked) {
+				const ax = verts[k * 3] - verts[m * 3], ay = verts[k * 3 + 1] - verts[m * 3 + 1], az = verts[k * 3 + 2] - verts[m * 3 + 2];
+				d = Math.min(d, ax * ax + ay * ay + az * az);
+			}
+			return d;
+		};
+		// The deepest vertex joins if it is clearly deeper than anything kept; it replaces its nearest neighbour when full.
+		if (low < lowestKept - 0.0005 && !picked.includes(deepest)) {
+			if (picked.length >= 4) {
+				let nearest = 0, best = Infinity;
+				picked.forEach((m, n) => {
+					const ax = verts[deepest * 3] - verts[m * 3], ay = verts[deepest * 3 + 1] - verts[m * 3 + 1], az = verts[deepest * 3 + 2] - verts[m * 3 + 2];
+					const d = ax * ax + ay * ay + az * az;
+					if (d < best) { best = d; nearest = n; }
+				});
+				picked[nearest] = deepest;
+			} else {
+				picked.push(deepest);
+			}
+		}
+		while (picked.length < 4) {
+			let best = -1, far = 0.012 * 0.012;
+			for (const k of near) {
+				const d = apart(k);
+				if (d > far) { far = d; best = k; }
+			}
+			if (best < 0) break;
+			picked.push(best);
+		}
+		kept.length = 0;
+		for (const k of picked) kept.push(k);
+		return picked;
 	}
 
 	// ------------------------------------------------------------- IK + motors
@@ -409,11 +553,9 @@ export class PuppetSim {
 		return q;
 	}
 
-	/** Current joint angles in the convention Rapier's motors use. */
+	/** Current joint angles: a hinge's turn about X, or a ball joint's rotation vector. */
 	jointAngles(j) {
-		const q = this._relQuat(j);
-		if (j.def.type === 'hinge') return [2 * Math.atan2(q[0], q[3])];
-		return [2 * Math.asin(M.clamp(q[0], -1, 1)), 2 * Math.asin(M.clamp(q[1], -1, 1)), 2 * Math.asin(M.clamp(q[2], -1, 1))];
+		return jointAngles(this._relQuat(j), j.def.type === 'hinge');
 	}
 
 	_solveIK() {
@@ -450,7 +592,7 @@ export class PuppetSim {
 			let q = M.qMul(M.qConj(this.bodyQuat(root.a)), M.qFromBasis(x, y, z));
 			if (q[3] < 0) q = [-q[0], -q[1], -q[2], -q[3]];
 			const flex = Math.acos(M.clamp(M.dot(u, f), -1, 1));
-			root.ik = { w: target.w, target: [2 * Math.asin(M.clamp(q[0], -1, 1)), 2 * Math.asin(M.clamp(q[1], -1, 1)), 2 * Math.asin(M.clamp(q[2], -1, 1))] };
+			root.ik = { w: target.w, target: jointAngles(q) };
 			e.mid.ik = { w: target.w, target: [e.def.bend * flex] };
 		});
 	}
@@ -459,23 +601,18 @@ export class PuppetSim {
 		const c = this.ctl;
 		this.joints.forEach((j, i) => {
 			const def = j.def;
+			const force = j.force;
 			const tone = c.tone[def.group] ?? 1;
 			let target;
 			let k = def.stiffness * tone;
 			let d = def.damping * tone;
 
 			if (c.locks[i]) {
-				if (!j.lockTarget) {
-					// Locking narrows the joint's limits to its current pose: a hard stop, not a stiff spring.
-					j.lockTarget = this.jointAngles(j);
-					j.axes.forEach((axis, n) => j.raw.jointSetLimits(j.joint.handle, axis, j.lockTarget[n] - 0.015, j.lockTarget[n] + 0.015));
-				}
+				// Locking narrows the joint's limits to its current pose: a hard stop, not a stiff spring.
+				if (!j.lockTarget) j.lockTarget = this.jointAngles(j);
 				target = j.lockTarget;
 				k = 900; d = 60;
 			} else {
-				if (j.lockTarget) {
-					j.axes.forEach((axis, n) => j.raw.jointSetLimits(j.joint.handle, axis, def.type === 'hinge' ? def.min : def.min[n], def.type === 'hinge' ? def.max : def.max[n]));
-				}
 				j.lockTarget = null;
 				if (j.ik) {
 					target = j.ik.target;
@@ -486,17 +623,14 @@ export class PuppetSim {
 				}
 			}
 
-			const prev = j.applied;
-			j.axes.forEach((axis, n) => {
-				const lo = def.type === 'hinge' ? def.min : def.min[n];
-				const hi = def.type === 'hinge' ? def.max : def.max[n];
-				const t = target ? M.clamp(target[n] || 0, lo, hi) : 0;
-				if (prev && Math.abs(prev.t[n] - t) < 1e-4 && prev.k === k && prev.d === d) return;
-				j.raw.jointConfigureMotorPosition(j.joint.handle, axis, t, k, d);
-				if (!j.applied) j.applied = { t: [0, 0, 0], k: 0, d: 0 };
-				j.applied.t[n] = t;
-			});
-			if (j.applied) { j.applied.k = k; j.applied.d = d; }
+			for (let n = 0; n < force.n; n++) {
+				const lo = j.lockTarget ? j.lockTarget[n] - 0.015 : j.lo[n];
+				const hi = j.lockTarget ? j.lockTarget[n] + 0.015 : j.hi[n];
+				force.lo[n] = lo; force.hi[n] = hi;
+				force.mt[n] = target ? M.clamp(target[n] || 0, lo, hi) : 0;
+				force.mk[n] = k * j.inertia[n];
+				force.mc[n] = d * j.inertia[n];
+			}
 		});
 	}
 
@@ -510,13 +644,12 @@ export class PuppetSim {
 			const anchor = this.bodies[e.anchorBody].body;
 			const p = this.pointAt(e.tipBody, e.def.tip);
 			const S = this.pointAt(e.root.a, e.root.anchorA);
-			// Point velocities take the lever arm from each body's centre of mass.
-			const rel = M.sub(this._pointVel(tip, M.sub(p, this.bodyCom(e.tipBody))), this._pointVel(anchor, M.sub(S, this.bodyCom(e.anchorBody))));
+			const rel = M.sub(this._pointVel(e.tipBody, p), this._pointVel(e.anchorBody, S));
 			let F = M.scale(M.sub(M.scale(M.sub(target.pos, p), w0 * w0), M.scale(rel, 1.8 * w0)), e.def.mass * target.w);
 			F = M.clampLen(F, e.def.force * target.w);
 			const J = M.scale(F, dt);
-			tip.applyImpulseAtPoint(xyz(J), xyz(p), true);
-			anchor.applyImpulseAtPoint(xyz(M.scale(J, -1)), xyz(S), true);
+			tip.applyImpulse(J[0], J[1], J[2], p[0], p[1], p[2]);
+			anchor.applyImpulse(-J[0], -J[1], -J[2], S[0], S[1], S[2]);
 		});
 	}
 
@@ -529,21 +662,21 @@ export class PuppetSim {
 			const i = this.bodyIx[id];
 			const { body, def } = this.bodies[i];
 			const err = M.qDeltaVec(this.bodyQuat(i), upright);
-			const av = body.angvel();
+			const av = body.w;
 			const inertia = def.mass * 0.05;
 			const torque = M.clampLen([
-				inertia * (70 * err[0] - 12 * av.x),
-				inertia * (70 * err[1] - 12 * av.y),
-				inertia * (70 * err[2] - 12 * av.z),
+				inertia * (70 * err[0] - 12 * av[0]),
+				inertia * (70 * err[1] - 12 * av[1]),
+				inertia * (70 * err[2] - 12 * av[2]),
 			], 26);
-			body.applyTorqueImpulse(xyz(M.scale(torque, amount * dt)), true);
+			body.applyTorqueImpulse(torque[0] * amount * dt, torque[1] * amount * dt, torque[2] * amount * dt);
 		}
 		// Calm the pendulum swing under the bar.
 		const chest = this.bodies[this.bodyIx.chest].body;
-		const lv = chest.linvel();
 		const bar = this.bars[0].vel;
-		const drag = this.totalMass * 1.3 * amount * dt;
-		chest.applyImpulse({ x: -(lv.x - bar[0]) * drag, y: 0, z: -(lv.z - bar[2]) * drag }, true);
+		const drag = (this.totalMass * 1.3 * amount * dt) / chest.mass;
+		chest.v[0] -= (chest.v[0] - bar[0]) * drag;
+		chest.v[2] -= (chest.v[2] - bar[2]) * drag;
 	}
 
 	_applyImpulses() {
@@ -552,8 +685,8 @@ export class PuppetSim {
 			const i = typeof item.body === 'number' ? item.body : this.bodyIx[item.body];
 			const body = this.bodies[i] && this.bodies[i].body;
 			if (!body) continue;
-			if (item.impulse) body.applyImpulse(xyz(M.clampLen(item.impulse, 6)), true);
-			if (item.torque) body.applyTorqueImpulse(xyz(M.clampLen(item.torque, 1.5)), true);
+			if (item.impulse) { const J = M.clampLen(item.impulse, 6); body.applyImpulse(J[0], J[1], J[2], body.x[0], body.x[1], body.x[2]); }
+			if (item.torque) { const T = M.clampLen(item.torque, 1.5); body.applyTorqueImpulse(T[0], T[1], T[2]); }
 		}
 		list.length = 0;
 	}
@@ -563,27 +696,32 @@ export class PuppetSim {
 	 * and which pair is worst. For tests and on-stage diagnostics.
 	 */
 	deepestOverlap() {
-		if (!this._owner) {
-			this._owner = new Map();
-			this.bodies.forEach((b, i) => { for (let k = 0; k < b.body.numColliders(); k++) this._owner.set(b.body.collider(k).handle, i); });
-		}
+		this._syncGeometry();
 		let depth = 0, pair = null;
-		this.bodies.forEach((b, i) => {
-			for (let k = 0; k < b.body.numColliders(); k++) {
-				const collider = b.body.collider(k);
-				this.world.contactPairsWith(collider, (other) => {
-					const j = this._owner.get(other.handle);
-					if (j === undefined || j <= i) return;
-					this.world.contactPair(collider, other, (manifold) => {
-						for (let n = 0; n < manifold.numContacts(); n++) {
-							const d = -manifold.contactDist(n);
-							if (d > depth) { depth = d; pair = [this.rig.bodies[i].id, this.rig.bodies[j].id]; }
-						}
-					});
-				});
+		for (const item of this.pairs) {
+			const A = this.bodies[item.i].body, B = this.bodies[item.j].body;
+			const dx = A.x[0] - B.x[0], dy = A.x[1] - B.x[1], dz = A.x[2] - B.x[2];
+			if (dx * dx + dy * dy + dz * dz > item.reach * item.reach) continue;
+			for (const [pa, pb] of item.list) {
+				const hit = pa.collider.contactCollider(pb.collider, 0, this._hit);
+				if (hit && -hit.distance > depth) { depth = -hit.distance; pair = [this.rig.bodies[item.i].id, this.rig.bodies[item.j].id]; }
 			}
-		});
+		}
 		return { depth, pair };
+	}
+
+	/** Largest gap between any joint's two anchor points, in metres. */
+	jointGap() {
+		let gap = 0;
+		for (const j of this.joints) gap = Math.max(gap, j.force.gap(this.solver));
+		return gap;
+	}
+
+	/** Speed of the fastest body, m/s. */
+	maxSpeed() {
+		let m = 0;
+		for (const { body } of this.bodies) m = Math.max(m, Math.hypot(body.v[0], body.v[1], body.v[2]));
+		return m;
 	}
 
 	// ----------------------------------------------------------- read back
@@ -591,26 +729,38 @@ export class PuppetSim {
 	_readBack(snap) {
 		this.prevPos.set(this.pos);
 		this.prevQuat.set(this.quat);
+		const dt = this.dt;
+		const lin = 1 / (1 + dt * LINEAR_DAMPING), ang = 1 / (1 + dt * ANGULAR_DAMPING);
 		let broken = false;
 		this.bodies.forEach(({ body, localCom }, i) => {
-			const t = body.translation();
-			const r = body.rotation();
-			if (!Number.isFinite(t.x + t.y + t.z + r.x + r.w) || Math.abs(t.x) > 40 || Math.abs(t.y) > 40 || Math.abs(t.z) > 40) {
+			const x = body.x, q = body.q;
+			if (!Number.isFinite(x[0] + x[1] + x[2] + q[0] + q[3]) || Math.abs(x[0]) > 40 || Math.abs(x[1]) > 40 || Math.abs(x[2]) > 40) {
 				broken = true;
 				return;
 			}
-			this.pos[i * 3] = t.x; this.pos[i * 3 + 1] = t.y; this.pos[i * 3 + 2] = t.z;
-			this.quat[i * 4] = r.x; this.quat[i * 4 + 1] = r.y; this.quat[i * 4 + 2] = r.z; this.quat[i * 4 + 3] = r.w;
-			const c = M.qRot([r.x, r.y, r.z, r.w], localCom);
-			this.com[i * 3] = t.x + c[0]; this.com[i * 3 + 1] = t.y + c[1]; this.com[i * 3 + 2] = t.z + c[2];
-			const lv = body.linvel();
-			const ls = Math.hypot(lv.x, lv.y, lv.z);
-			if (ls > MAX_LINVEL) { const s = MAX_LINVEL / ls; body.setLinvel({ x: lv.x * s, y: lv.y * s, z: lv.z * s }, true); }
-			const av = body.angvel();
-			const as = Math.hypot(av.x, av.y, av.z);
-			if (as > MAX_ANGVEL) { const s = MAX_ANGVEL / as; body.setAngvel({ x: av.x * s, y: av.y * s, z: av.z * s }, true); }
+			const c = M.qRot(q, localCom);
+			this.pos[i * 3] = x[0] - c[0]; this.pos[i * 3 + 1] = x[1] - c[1]; this.pos[i * 3 + 2] = x[2] - c[2];
+			this.quat[i * 4] = q[0]; this.quat[i * 4 + 1] = q[1]; this.quat[i * 4 + 2] = q[2]; this.quat[i * 4 + 3] = q[3];
+			this.com[i * 3] = x[0]; this.com[i * 3 + 1] = x[1]; this.com[i * 3 + 2] = x[2];
+			if (snap) return;
+			const v = body.v, w = body.w;
+			const ls = Math.hypot(v[0], v[1], v[2]);
+			const sl = ls > MAX_LINVEL ? (MAX_LINVEL / ls) * lin : lin;
+			v[0] *= sl; v[1] *= sl; v[2] *= sl;
+			const as = Math.hypot(w[0], w[1], w[2]);
+			const sa = as > MAX_ANGVEL ? (MAX_ANGVEL / as) * ang : ang;
+			w[0] *= sa; w[1] *= sa; w[2] *= sa;
 		});
 		if (snap) { this.prevPos.set(this.pos); this.prevQuat.set(this.quat); }
 		if (broken && !snap) this.reset();
 	}
+}
+
+/** out = conj(q) * v * q */
+function rotInvInto(q, x, y, z, out) {
+	const qx = -q[0], qy = -q[1], qz = -q[2], qw = q[3];
+	const tx = 2 * (qy * z - qz * y), ty = 2 * (qz * x - qx * z), tz = 2 * (qx * y - qy * x);
+	out[0] = x + qw * tx + (qy * tz - qz * ty);
+	out[1] = y + qw * ty + (qz * tx - qx * tz);
+	out[2] = z + qw * tz + (qx * ty - qy * tx);
 }

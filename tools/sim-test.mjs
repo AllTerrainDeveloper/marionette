@@ -25,7 +25,7 @@ function run(seconds, each) {
 	for (let i = 0; i < steps; i++) {
 		if (each) each(i * DT);
 		sim.step();
-		for (const b of sim.bodies) { const v = b.body.linvel(); maxSpeed = Math.max(maxSpeed, Math.hypot(v.x, v.y, v.z)); }
+		maxSpeed = Math.max(maxSpeed, sim.maxSpeed());
 	}
 	return maxSpeed;
 }
@@ -36,7 +36,7 @@ function drift(seconds = 1) {
 	for (let i = 0; i < before.length; i += 3) worst = Math.max(worst, Math.hypot(sim.pos[i] - before[i], sim.pos[i + 1] - before[i + 1], sim.pos[i + 2] - before[i + 2]));
 	return worst;
 }
-function speedNow() { let m = 0; for (const b of sim.bodies) { const v = b.body.linvel(); m = Math.max(m, Math.hypot(v.x, v.y, v.z)); } return m; }
+function speedNow() { return sim.maxSpeed(); }
 function check(name, ok, detail = '') { if (!ok) failures++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}  ${detail}`); }
 function report(label) {
 	const t = [...sim.tension].map((v) => v.toFixed(0)).join(' ');
@@ -79,7 +79,7 @@ const maxShake = run(12, (t) => {
 report('shaken');
 check('survives violent shaking without reset', sim.resets === 1, `resets ${sim.resets}, peak speed ${maxShake.toFixed(1)}`);
 let joined = 0;
-for (const j of sim.joints) joined = Math.max(joined, M.dist(sim.pointAt(j.a, j.anchorA), sim.pointAt(j.b, j.anchorB)));
+joined = sim.jointGap();
 check('joints stay assembled', joined < 0.08, `worst gap ${joined.toFixed(4)} m`);
 
 // 6. Recovery.

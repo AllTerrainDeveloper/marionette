@@ -122,18 +122,18 @@ const str = (n, id, label, body, at, handle, slack, k, c, max, group) => ({
 
 export const STRINGS = [
 	// The head hangs from the crown of its hat, straight above its centre of mass.
-	{ ...str(1, 'head', 'Head', 'head', [0, 0.1, 0], 'head', 0.002, 9000, 90, 420, 'support'), out: [0, 1, 0] },
-	str(2, 'back', 'Upper back', 'chest', [0, 0.06, -0.08], 'back', 0.012, 7000, 80, 420, 'support'),
-	str(3, 'shoulderL', 'Left shoulder', 'chest', [0.11, 0.07, -0.05], 'shoulderL', -0.006, 9000, 90, 420, 'support'),
-	str(4, 'shoulderR', 'Right shoulder', 'chest', [-0.11, 0.07, -0.05], 'shoulderR', -0.006, 9000, 90, 420, 'support'),
-	str(5, 'wristL', 'Left wrist', 'forearmL', [0, -0.09, 0.01], 'wristL', 0.03, 2600, 22, 160, 'arms'),
-	str(6, 'wristR', 'Right wrist', 'forearmR', [0, -0.09, 0.01], 'wristR', 0.03, 2600, 22, 160, 'arms'),
-	str(7, 'kneeL', 'Left knee', 'thighL', [0, -0.14, 0.02], 'kneeL', 0.012, 3600, 34, 220, 'legs'),
-	str(8, 'kneeR', 'Right knee', 'thighR', [0, -0.14, 0.02], 'kneeR', 0.012, 3600, 34, 220, 'legs'),
-	{ ...str(9, 'ankleL', 'Left ankle', 'footL', [0, 0, 0.05], 'ankleL', 0.045, 2600, 24, 160, 'legs'), out: [0, 1, 0] },
-	{ ...str(10, 'ankleR', 'Right ankle', 'footR', [0, 0, 0.05], 'ankleR', 0.045, 2600, 24, 160, 'legs'), out: [0, 1, 0] },
-	str(11, 'hipL', 'Left hip', 'pelvis', [0.12, 0.03, -0.02], 'hipL', 0.015, 6000, 70, 420, 'support'),
-	str(12, 'hipR', 'Right hip', 'pelvis', [-0.12, 0.03, -0.02], 'hipR', 0.015, 6000, 70, 420, 'support'),
+	{ ...str(1, 'head', 'Head', 'head', [0, 0.1, 0], 'head', 0.002, 9000, 90, 160, 'support'), out: [0, 1, 0] },
+	str(2, 'back', 'Upper back', 'chest', [0, 0.06, -0.08], 'back', 0.012, 7000, 80, 160, 'support'),
+	str(3, 'shoulderL', 'Left shoulder', 'chest', [0.11, 0.07, -0.05], 'shoulderL', -0.006, 9000, 90, 160, 'support'),
+	str(4, 'shoulderR', 'Right shoulder', 'chest', [-0.11, 0.07, -0.05], 'shoulderR', -0.006, 9000, 90, 160, 'support'),
+	str(5, 'wristL', 'Left wrist', 'forearmL', [0, -0.09, 0.01], 'wristL', 0.03, 2600, 22, 60, 'arms'),
+	str(6, 'wristR', 'Right wrist', 'forearmR', [0, -0.09, 0.01], 'wristR', 0.03, 2600, 22, 60, 'arms'),
+	str(7, 'kneeL', 'Left knee', 'thighL', [0, -0.14, 0.02], 'kneeL', 0.012, 3600, 34, 80, 'legs'),
+	str(8, 'kneeR', 'Right knee', 'thighR', [0, -0.14, 0.02], 'kneeR', 0.012, 3600, 34, 80, 'legs'),
+	{ ...str(9, 'ankleL', 'Left ankle', 'footL', [0, 0, 0.05], 'ankleL', 0.045, 2600, 24, 60, 'legs'), out: [0, 1, 0] },
+	{ ...str(10, 'ankleR', 'Right ankle', 'footR', [0, 0, 0.05], 'ankleR', 0.045, 2600, 24, 60, 'legs'), out: [0, 1, 0] },
+	str(11, 'hipL', 'Left hip', 'pelvis', [0.12, 0.03, -0.02], 'hipL', 0.015, 6000, 70, 160, 'support'),
+	str(12, 'hipR', 'Right hip', 'pelvis', [-0.12, 0.03, -0.02], 'hipR', 0.015, 6000, 70, 160, 'support'),
 ];
 
 // IK end effectors: a two-bone chain (root joint → mid joint → tip) whose tip
