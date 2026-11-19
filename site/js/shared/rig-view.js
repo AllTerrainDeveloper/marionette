@@ -7,11 +7,12 @@ import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { BODIES, BARS, HANDLES, RIG_HOME } from './rig-config.js';
-import { buildWrapProxies, effectiveAttach, stringExclusions, wrapFrame, stringPath } from './string-path.js';
+import { buildWrapProxies, effectiveAttach, stringExclusions, wrapFrame, stringPath, pushOut, distanceToSegment } from './string-path.js';
 
-const SEGMENTS = 28;
+const SEGMENTS = 44;
 const ROPE_PASSES = 14;         // relaxation sweeps per frame for a hanging string
 const GRAVITY = 9.81;
+const ROPE_MARGIN = 0.006;       // how far off the wood a loose string rests (m)
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
 const _q = new THREE.Quaternion();
@@ -169,21 +170,22 @@ export class StringsView {
 				eye.rotation.y = Math.PI / 2;
 				this.opts.parts[body].add(eye);
 			}
-			this.items.push({ def, body, handle, line, eye, tie, rest: stringRestLength(def, tie), excluded: stringExclusions(def, tie, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null, memory: new Map(), rope: new Float32Array((SEGMENTS + 1) * 3), last: new Float32Array((SEGMENTS + 1) * 3), live: false });
+			this.items.push({ def, body, handle, line, eye, tie, rest: stringRestLength(def, tie), excluded: stringExclusions(def, tie, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null, rope: new Float32Array((SEGMENTS + 1) * 3), last: new Float32Array((SEGMENTS + 1) * 3), live: false });
 		}
 	}
 
 	/**
 	 * pos / quat: body transforms, handlePos: handle positions,
 	 * tension: 0..1 per string (fraction of its maximum), brokenMask: bit per string,
-	 * pulls: optional metres of pull per string, selected: optional Set of indices,
-	 * paths: optional per-string routes from the simulation ([[x, y, z], ...], handle first).
+	 * pulls: optional metres of pull per string, selected: optional Set of indices.
 	 *
-	 * A taut string is drawn along its route. A slack one is a little rope of its own:
-	 * a chain of points with the string's full length, pinned at both ends, that hangs,
-	 * swings and folds under gravity. A snapped one is pinned at the handle only.
+	 * A taut string is drawn along its route round the limbs. A slack one is not on that
+	 * route at all — nothing presses it against the wood — so it is a little rope of its
+	 * own: a chain of points with the string's full length, pinned only at its two ends,
+	 * that hangs, swings and folds under gravity and rests on the puppet only where it
+	 * actually falls against it. A snapped one is pinned at the handle only.
 	 */
-	update(pos, quat, handlePos, tension, brokenMask, time, pulls, selected, paths) {
+	update(pos, quat, handlePos, tension, brokenMask, time, pulls, selected) {
 		// Route every string around the limbs exactly as the simulation does.
 		// (`wrap = false` draws plain straight strings — debug mode uses it to compare.)
 		const frame = this.wrap === false ? NO_PIECES : wrapFrame(this.proxies, pos, quat, this.frame);
@@ -201,16 +203,9 @@ export class StringsView {
 			_b.set(handlePos[handle * 3], handlePos[handle * 3 + 1], handlePos[handle * 3 + 2]);
 			item.attach.copy(_a); item.top.copy(_b);
 
-			// The route: from the simulation when it is given (its via points, our interpolated ends), else our own.
-			let pts;
-			const given = this.wrap !== false && paths && paths[i];
-			if (given && given.length >= 2) {
-				pts = given.slice();
-				pts[0] = [_b.x, _b.y, _b.z];
-				pts[pts.length - 1] = [_a.x, _a.y, _a.z];
-			} else {
-				pts = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], frame, item.excluded, undefined, item.memory).points;
-			}
+			// The taut route, worked out on the very transforms being drawn, so it lies on the
+			// surface that is on screen (a route from an earlier physics step would sink into it).
+			const pts = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], frame, item.excluded).points;
 			item.points = pts;
 			const legs = pts.length - 1;
 			let length = 0;
@@ -254,14 +249,18 @@ export class StringsView {
 				}
 				// Then the string's length is enforced: no link may be longer than its share.
 				const link = (broken ? Math.min(rest, 1.2) : rest) / N;
-				// Via points (the string lying over a limb) pin the chain point nearest to them.
-				const pins = _pins;
-				pins.length = 0;
-				if (!broken) for (let k = 1; k < legs; k++) pins.push(Math.min(N - 1, Math.max(1, Math.round((along[k] / (length || 1)) * N))), k);
+				// The pieces of the puppet this string could be touching.
+				const near = _near;
+				near.length = 0;
+				const reach = 0.06 + Math.max(0, slack);
+				for (let k = 0; k < frame.length; k++) {
+					const f = frame[k];
+					if (item.excluded.has(k)) continue;
+					if (distanceToSegment(f.o, pts[0], pts[legs]) < f.bound + reach) near.push(f);
+				}
 				for (let pass = 0; pass < ROPE_PASSES; pass++) {
 					rope[0] = _b.x; rope[1] = _b.y; rope[2] = _b.z;
 					if (!broken) { rope[N * 3] = _a.x; rope[N * 3 + 1] = _a.y; rope[N * 3 + 2] = _a.z; }
-					for (let n = 0; n < pins.length; n += 2) { const o = pins[n] * 3, v = pts[pins[n + 1]]; rope[o] = v[0]; rope[o + 1] = v[1]; rope[o + 2] = v[2]; }
 					for (let k = 0; k < N; k++) {
 						const o = k * 3;
 						const dx = rope[o + 3] - rope[o], dy = rope[o + 4] - rope[o + 1], dz = rope[o + 5] - rope[o + 2];
@@ -272,6 +271,24 @@ export class StringsView {
 						const f = (l - link) / l;
 						rope[o] += dx * f * share; rope[o + 1] += dy * f * share; rope[o + 2] += dz * f * share;
 						rope[o + 3] -= dx * f * (1 - share); rope[o + 4] -= dy * f * (1 - share); rope[o + 5] -= dz * f * (1 - share);
+					}
+					// It cannot be inside the wood: a point that is gets moved to the surface, and
+					// loses the speed it had into it.
+					if (near.length && (pass % 3 === 2 || pass === ROPE_PASSES - 1)) {
+						for (let k = first; k <= end; k++) {
+							const o = k * 3;
+							_p[0] = rope[o]; _p[1] = rope[o + 1]; _p[2] = rope[o + 2];
+							for (let n = 0; n < near.length; n++) {
+								const f = near[n];
+								const ex = _p[0] - f.o[0], ey = _p[1] - f.o[1], ez = _p[2] - f.o[2];
+								if (ex * ex + ey * ey + ez * ez > (f.bound + 0.01) * (f.bound + 0.01)) continue;
+								const out = pushOut(f, _p, ROPE_MARGIN);
+								if (!out) continue;
+								last[o] += out[0] - _p[0]; last[o + 1] += out[1] - _p[1]; last[o + 2] += out[2] - _p[2];
+								_p[0] = out[0]; _p[1] = out[1]; _p[2] = out[2];
+							}
+							rope[o] = _p[0]; rope[o + 1] = _p[1]; rope[o + 2] = _p[2];
+						}
 					}
 				}
 				// It lies on the floor rather than passing through it.
@@ -312,4 +329,5 @@ export class StringsView {
 const _white = new THREE.Color(1, 1, 1);
 const NO_PIECES = [];
 const _taut = new Float32Array((SEGMENTS + 1) * 3);
-const _pins = [];
+const _near = [];
+const _p = [0, 0, 0];

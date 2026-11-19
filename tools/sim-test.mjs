@@ -108,12 +108,12 @@ check('stands back up when re-strung', sim.bodyPos(ix.head)[1] > 1.4, `head y ${
 //    much string lies inside the wood with collisions off and on.
 {
 	const model = buildMeshes();
-	const scenario = (opts, drive) => {
+	const scenario = (opts, drive, phase = 0) => {
 		const s2 = new PuppetSim(RAPIER, RIG, opts);
 		let cut = 0, worst = 0, where = '', samples = 0, overlap = 0, pair = '';
 		const total = Math.round(14 / s2.dt);
 		for (let i = 0; i < total; i++) {
-			drive(s2, i * s2.dt);
+			drive(s2, i * s2.dt + phase);
 			s2.step();
 			if (i % 24) continue;
 			const m = stringsInsideWood(s2, model, { routed: opts.stringCollision });
@@ -124,6 +124,17 @@ check('stands back up when re-strung', sim.bodyPos(ix.head)[1] > 1.4, `head y ${
 			if (o.depth > overlap) { overlap = o.depth; pair = o.pair.join(' / '); }
 		}
 		return { cut: cut / samples, worst, where, overlap, pair, resets: s2.resets - 1, joints: Math.max(...s2.joints.map((j) => M.dist(s2.pointAt(j.a, j.anchorA), s2.pointAt(j.b, j.anchorB)))) };
+	};
+	// The motion is chaotic, so one run says little: the same performance is started at three
+	// different moments and the figures are the average share and the worst case of the three.
+	const several = (opts, drive) => {
+		const runs = [0, 2.9, 5.7].map((phase) => scenario(opts, drive, phase));
+		const deepest = runs.reduce((a, b) => (b.worst > a.worst ? b : a));
+		const overlapping = runs.reduce((a, b) => (b.overlap > a.overlap ? b : a));
+		return {
+			cut: runs.reduce((sum, r) => sum + r.cut, 0) / runs.length, worst: deepest.worst, where: deepest.where,
+			overlap: overlapping.overlap, pair: overlapping.pair, resets: Math.max(...runs.map((r) => r.resets)), joints: Math.max(...runs.map((r) => r.joints)),
+		};
 	};
 	const fold = (s2, t) => {
 		const q = M.qFromYPR(Math.sin(t * 0.9) * 1.6, 0.75 * Math.sin(t * 1.3), 0.7 * Math.sin(t * 1.1 + 1));
@@ -138,7 +149,7 @@ check('stands back up when re-strung', sim.bodyPos(ix.head)[1] > 1.4, `head y ${
 	const pct = (v) => `${(v * 100).toFixed(1)}%`, mm = (v) => `${(v * 1000).toFixed(0)} mm`;
 	for (const [name, drive, limit] of [['performing (tilt, roll, pulls)', perform, 0.03], ['folded up under a low bar', fold, 0.1]]) {
 		const off = scenario({ stringCollision: false }, drive);
-		const on = scenario({ stringCollision: true }, drive);
+		const on = several({ stringCollision: true }, drive);
 		console.log(`  [${name}] string inside the wood for more than 15 mm: ${pct(off.cut)} of the time without collisions (worst ${mm(off.worst)}), ${pct(on.cut)} with (worst ${mm(on.worst)}${on.where ? ', ' + on.where : ''})`);
 		check(`${name}: strings stay out of the wood`, on.cut <= limit && on.cut < off.cut * 0.3, `${pct(on.cut)} vs ${pct(off.cut)} without collisions`);
 		check(`${name}: limbs do not pass through each other`, on.overlap < 0.03, `deepest overlap ${mm(on.overlap)}${on.pair ? ' (' + on.pair + ')' : ''}`);

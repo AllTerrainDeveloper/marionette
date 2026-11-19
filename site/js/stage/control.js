@@ -219,13 +219,13 @@ export class Controller {
 		}
 	}
 
+	/** Nobody on the strings: the bar drifts slowly, as if held by a patient hand. No bobbing, nothing fast. */
 	_idle(add) {
 		const t = this.t;
-		add('main.roll', 0.1 * Math.sin(t * 0.8) + 0.035 * Math.sin(t * 2.1 + 1));
-		add('main.pitch', 0.06 * Math.sin(t * 0.55 + 2));
-		add('main.yaw', 0.32 * Math.sin(t * 0.21));
-		add('main.y', 0.015 * Math.sin(t * 1.6));
-		add('limb.roll', 0.12 * Math.sin(t * 0.47 + 0.6));
+		add('main.roll', 0.04 * Math.sin(t * 0.5));
+		add('main.pitch', 0.025 * Math.sin(t * 0.37 + 2));
+		add('main.yaw', 0.22 * Math.sin(t * 0.17));
+		add('limb.roll', 0.05 * Math.sin(t * 0.31 + 0.6));
 		if (t > this.nextIdle) {
 			this.play(['wave', 'jig', 'bow', 'wave'][Math.floor(t / 9) % 4]);
 			this.nextIdle = t + 9 + ((t * 7.3) % 5);

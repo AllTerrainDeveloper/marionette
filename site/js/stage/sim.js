@@ -44,6 +44,7 @@ const CONTACT_REACH = 0.03;       // contacts are created this far ahead of touc
 const FLOOR_FRICTION = { foot: 1.0, other: 0.7 };
 const BODY_FRICTION = 0.35;
 const ANGULAR_LEVER = 0.1;        // typical lever arm (m): sets the base stiffness of angle rows
+const JOINT_FRICTION = 4;          // how quickly a wooden joint eats a free swing (1/s)
 const REEL_SPEED = 2;            // fastest a string is taken in when shortened or re-tied (m/s)
 
 export class PuppetSim {
@@ -167,7 +168,12 @@ export class PuppetSim {
 				mass / (dt * dt), Math.max(Math.min(...inertia), mass * (o.angularLever || ANGULAR_LEVER) ** 2) / (dt * dt)
 			);
 			force.mmax = def.torque;
-			return { def, force, inertia, lo, hi, a, b, anchorA, anchorB, ik: null, lockTarget: null };
+			// A limb swinging freely about the joint turns its own inertia plus its mass at
+			// the distance of its centre from the joint: what the joint's friction works against.
+			const rB = M.sub(anchorB, this.bodies[b].localCom);
+			const child = this.bodies[b].body;
+			const swing = lo.map((_, n) => 1 / invAbout(b, [n === 0 ? 1 : 0, n === 1 ? 1 : 0, n === 2 ? 1 : 0]) + child.mass * M.dot(rB, rB));
+			return { def, force, inertia, swing, lo, hi, a, b, anchorA, anchorB, ik: null, lockTarget: null };
 		});
 
 		// Which pieces may touch: every pair of parts that are not directly jointed.
@@ -221,7 +227,7 @@ export class PuppetSim {
 			const rest = Number.isFinite(def.length) ? def.length : M.dist(restHandle, restAttach) + (def.slack || 0);
 			const excluded = stringExclusions(def, at, rig.bodies, this.wrapProxies);
 			const force = new StringForce(rig.bodies[body].mass / (this.dt * this.dt));
-			this.strings.push({ def, body, handle, at, rest, excluded, force, local: M.sub(at, this.bodies[body].localCom), tension: 0, broken: false, over: 0, path: null, memory: new Map() });
+			this.strings.push({ def, body, handle, at, rest, excluded, force, local: M.sub(at, this.bodies[body].localCom), tension: 0, broken: false, over: 0, path: null });
 		}
 		this.tension = new Float32Array(this.strings.length);
 	}
@@ -244,7 +250,7 @@ export class PuppetSim {
 		});
 		this.contacts.clear();
 		for (const j of this.joints) j.force.reset();
-		this.strings.forEach((s) => { s.broken = false; s.over = 0; s.tension = 0; s.force.release(); s.memory.clear(); });
+		this.strings.forEach((s) => { s.broken = false; s.over = 0; s.tension = 0; s.force.release(); });
 		this.handleOff.forEach((o, i) => { o[0] = c.handleOffset[i][0]; o[1] = c.handleOffset[i][1]; o[2] = c.handleOffset[i][2]; });
 		this._placeHandles(0);
 		this._readBack(true);
@@ -348,7 +354,7 @@ export class PuppetSim {
 			s.path = null;
 			if (!s.def.enabled || s.broken || gain < 0.001) { s.force.release(); return; }
 			const attach = M.add(this.bodyPos(s.body), M.qRot(this.bodyQuat(s.body), s.at));
-			const path = stringPath(this.handleAt(s.handle), attach, frame, s.excluded, undefined, s.memory);
+			const path = stringPath(this.handleAt(s.handle), attach, frame, s.excluded);
 			if (path.length < 1e-6) { s.force.release(); return; }
 			s.path = path;
 			const pts = path.points;
@@ -629,7 +635,9 @@ export class PuppetSim {
 				force.lo[n] = lo; force.hi[n] = hi;
 				force.mt[n] = target ? M.clamp(target[n] || 0, lo, hi) : 0;
 				force.mk[n] = k * j.inertia[n];
-				force.mc[n] = d * j.inertia[n];
+				// Muscle tone, plus the friction every wooden joint has: without it a limb set
+				// swinging takes most of a minute to hang still.
+				force.mc[n] = d * j.inertia[n] + JOINT_FRICTION * j.swing[n];
 			}
 		});
 	}

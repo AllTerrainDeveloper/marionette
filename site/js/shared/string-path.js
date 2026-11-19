@@ -31,6 +31,8 @@ import { SHAPES, radiusTable, radiusAt } from './puppet-shapes.js';
 
 /** Half the string's thickness plus a hair, so it rests on the surface rather than in it. */
 export const STRING_MARGIN = 0.004;
+/** How far a string's tie point (a screw eye) stands off the wood, so the string leaves it rather than lying on it. */
+export const TIE_STANDOFF = 0.012;
 /** The most via points one string may have. */
 export const MAX_VIAS = 10;
 /** The most via points one string may have on a single piece. */
@@ -88,7 +90,7 @@ const fromPiece = (f, u) => add(f.o, qRot(f.q, [u[0] * f.scale[0], u[1] * f.scal
  * alongside a limb, or straight down through the torso — cases a closest-approach-to-
  * the-axis test misses, because there the axis distance says nothing about the bulge.
  */
-function legHit(f, p, q, margin, hint) {
+function legHit(f, p, q, margin, inset = 0) {
 	const P = toPiece(f, p), Q = toPiece(f, q);
 	const dx = Q[0] - P[0], dy = Q[1] - P[1], dz = Q[2] - P[2];
 	let s0 = 0, s1 = 1;
@@ -98,8 +100,12 @@ function legHit(f, p, q, margin, hint) {
 		const a = (f.y0 - P[1]) / dy, b = (f.y1 - P[1]) / dy;
 		s0 = Math.max(0, Math.min(a, b));
 		s1 = Math.min(1, Math.max(a, b));
-		if (s0 >= s1) return null;
 	}
+	// The very ends of a leg are left alone (an end resting in or on a piece cannot be
+	// fixed by bending the leg right there); the deepest point is looked for between them.
+	s0 = Math.max(s0, inset);
+	s1 = Math.min(s1, 1 - inset);
+	if (s0 >= s1) return null;
 	// A flat end (a drum's face) can be the nearest way out, but only for a leg that comes
 	// in through that face without going out through the opposite one; a leg that goes
 	// clean through a plate has to go round its rim.
@@ -144,11 +150,30 @@ function legHit(f, p, q, margin, hint) {
 		const l = Math.hypot(dx, dz);
 		if (l > 1e-6) { nx = dz / l; nz = -dx / l; } else { nx = 0; nz = 1; }
 	}
-	// A string that already lies on one side of this piece stays on that side: it has to
-	// slide round the wood, it cannot jump through to the far side.
-	if (hint && nx * hint[0] + nz * hint[1] < 0) { nx = hint[0]; nz = hint[1]; }
-	return { s, depth, point: fromPiece(f, [nx * reach, cy, nz * reach]), dir: [nx, nz] };
+	return { s, depth, point: fromPiece(f, [nx * reach, cy, nz * reach]) };
 }
+
+/**
+ * A point of a loose string against piece f: if it lies inside the wood, the nearest
+ * place just outside it (through the side, or through a flat end if that is nearer);
+ * null if it is already clear.
+ */
+export function pushOut(f, x, margin = STRING_MARGIN) {
+	const u = toPiece(f, x);
+	if (u[1] <= f.y0 || u[1] >= f.y1) return null;
+	const reach = radiusAt(f.table, u[1]) + margin / f.radial;
+	const rho = Math.hypot(u[0], u[2]);
+	if (rho >= reach) return null;
+	const sideways = (reach - rho) * f.radial;
+	const sy = f.scale[1];
+	if (f.flatTop && (f.y1 - u[1]) * sy < sideways) return fromPiece(f, [u[0], f.y1 + margin / sy, u[2]]);
+	if (f.flatBottom && (u[1] - f.y0) * sy < sideways) return fromPiece(f, [u[0], f.y0 - margin / sy, u[2]]);
+	const nx = rho > 1e-6 ? u[0] / rho : 1, nz = rho > 1e-6 ? u[2] / rho : 0;
+	return fromPiece(f, [nx * reach, u[1], nz * reach]);
+}
+
+/** Distance from point p to the segment a-b. */
+export const distanceToSegment = (p, a, b) => pointSegDist(p, a, b);
 
 /**
  * Where a string is actually tied: `def.at`, moved out to the surface if it lies inside
@@ -160,7 +185,7 @@ export function effectiveAttach(def, bodies, proxies) {
 	if (own < 0) return at;
 	const mine = proxies.filter((p) => p.body === own);
 	const toLocal = (p, x) => { const v = qRot(p.inv, sub(x, p.at)); return [v[0] / p.scale[0], v[1] / p.scale[1], v[2] / p.scale[2]]; };
-	const clearance = STRING_MARGIN + 0.0008;
+	const clearance = TIE_STANDOFF;
 	const inside = (x) => mine.some((p) => { const u = toLocal(p, x); const r = radiusAt(p.table, u[1]); return r > 0 && Math.hypot(u[0], u[2]) < r + clearance / p.radial; });
 
 	if (def.out) {
@@ -228,14 +253,13 @@ export function stringExclusions(def, at, bodies, proxies) {
  * Returns { points, bodies, length }: points[0] is the handle, the last is the attachment,
  * anything between is a via point resting on body `bodies[i]` (-1 for the two ends).
  *
- * `memory` (a Map kept per string by the caller) remembers which side of each piece the
- * string passed last time, so the route moves continuously instead of flipping sides.
+ * This is the shortest way round for a string pulled tight. It has no memory: a string
+ * that is loose is not on this route at all (the renderers draw it hanging free).
  */
-export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN, memory = null) {
+export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN) {
 	const points = [from, to];
 	const bodies = [-1, -1];
 	let counts = null;
-	let sides = null;
 	for (let n = 0; n < MAX_VIAS; n++) {
 		let best = null;
 		for (let i = 0; i < points.length - 1; i++) {
@@ -247,11 +271,9 @@ export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN, me
 				const seen = counts ? counts[k] || 0 : 0;
 				if (seen >= MAX_PER_PIECE || (excluded && excluded.has(k))) continue;
 				if (pointSegDist(f.o, p, q) > f.bound + margin) continue;
-				const hit = legHit(f, p, q, margin, memory && !seen ? memory.get(k) : undefined);
+				const hit = legHit(f, p, q, margin, END_CLEARANCE / segLen);
 				if (!hit || hit.depth <= (seen ? REWRAP_DEPTH : 0) || (best && hit.depth <= best.depth)) continue;
-				// A leg end sitting in or on a piece cannot be fixed by bending the leg there.
-				if (hit.s * segLen < END_CLEARANCE || (1 - hit.s) * segLen < END_CLEARANCE) continue;
-				best = { depth: hit.depth, at: i + 1, piece: k, body: f.body, point: hit.point, dir: seen ? null : hit.dir };
+				best = { depth: hit.depth, at: i + 1, piece: k, body: f.body, point: hit.point };
 			}
 		}
 		if (!best) break;
@@ -259,11 +281,6 @@ export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN, me
 		bodies.splice(best.at, 0, best.body);
 		counts = counts || {};
 		counts[best.piece] = (counts[best.piece] || 0) + 1;
-		if (best.dir) (sides || (sides = new Map())).set(best.piece, best.dir);
-	}
-	if (memory) {
-		memory.clear();
-		if (sides) for (const [k, dir] of sides) memory.set(k, dir);
 	}
 	let length = 0;
 	for (let i = 0; i < points.length - 1; i++) length += len(sub(points[i + 1], points[i]));
@@ -278,8 +295,8 @@ export function pathPenetration(points, frame, excluded) {
 		for (let k = 0; k < frame.length; k++) {
 			const f = frame[k];
 			if ((excluded && excluded.has(k)) || pointSegDist(f.o, points[i], points[i + 1]) > f.bound) continue;
-			const hit = legHit(f, points[i], points[i + 1], 0);
-			if (!hit || hit.s * segLen < END_CLEARANCE || (1 - hit.s) * segLen < END_CLEARANCE) continue;
+			const hit = legHit(f, points[i], points[i + 1], 0, END_CLEARANCE / segLen);
+			if (!hit) continue;
 			worst = Math.max(worst, hit.depth);
 		}
 	}

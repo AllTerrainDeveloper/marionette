@@ -46,7 +46,7 @@ async function boot() {
 	const sim = new PuppetSim(RAPIER);
 	const controller = new Controller(sim);
 	// Let the puppet settle onto its strings before the curtain rises.
-	for (let i = 0; i < sim.opts.hz * 1.5; i++) { controller.update(); sim.step(); }
+	for (let i = 0; i < sim.opts.hz * 4; i++) { controller.update(); sim.step(); }   // let the puppet come to rest before the curtain opens
 
 	const canvas = $('#stage');
 	const stage = new Stage(canvas);
@@ -284,7 +284,7 @@ async function boot() {
 		}
 		let brokenMask = 0;
 		sim.strings.forEach((s, i) => { tensionNorm[i] = sim.tension[i] / s.def.max; if (s.broken) brokenMask |= 1 << i; });
-		strings.update(ipos, iquat, sim.handlePos, tensionNorm, brokenMask, clock, sim.ctl.pull, null, sim.strings.map((x) => (x.path ? x.path.points : null)));
+		strings.update(ipos, iquat, sim.handlePos, tensionNorm, brokenMask, clock, sim.ctl.pull);
 
 		stage.update(dt, clock, { x: ipos[chest * 3], y: ipos[chest * 3 + 1], z: ipos[chest * 3 + 2] });
 		stage.render(dt);
