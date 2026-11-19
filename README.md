@@ -18,6 +18,19 @@ Open http://127.0.0.1:8765/ on a computer. Phones need HTTPS for motion sensors,
 
 Stage keys: `d` stats · `q` quality · `r` reset · `f` fullscreen.
 
+### Debug mode (no phone needed)
+
+Add `?debug` to the stage URL for a panel of predefined movement routines, or `?debug=<name>` to start one straight away:
+
+```
+http://127.0.0.1:8765/?debug
+http://127.0.0.1:8765/?debug=arms
+```
+
+Routines: `tilt`, `bow`, `pulls`, `handles`, `arms`, `reach`, `joints`, `walk`, `pro` (two phones), `chaos`, and `tour` (all of them in turn). Each one fills in the same input a phone sends, so mapping, gait, strings and collisions run exactly as in a real session. Routines are plain data at the top of `site/js/stage/debug.js`.
+
+The panel also shows live measurements against the rendered meshes (how much string lies inside the wood, how far limbs overlap), and has switches for string collisions on/off, quarter-speed slow motion and a close-up camera. Nothing of it is loaded without the parameter.
+
 ## How it fits together
 
 | Path | What it is |
@@ -31,6 +44,7 @@ Stage keys: `d` stats · `q` quality · `r` reset · `f` fullscreen.
 | `site/js/shared/net.js` | Signaling client and WebRTC link (two data channels). |
 | `site/js/stage/sim.js` | Rapier world, tension-only strings, IK, balance, safety guards. |
 | `site/js/stage/control.js` | Phone input → bar / handle / IK / motor targets; gait; idle animation. |
+| `site/js/stage/debug.js` | Debug mode: movement routines and live measurements, loaded only with `?debug`. |
 | `site/js/stage/scene.js` | Theatre set, lighting, post-processing, adaptive quality. |
 | `site/js/controller/*` | Sensors + calibration, top-down board, touch, Custom Rig editor. |
 | `site/signal.php` | Minimal PHP signaling (temporary session files). |

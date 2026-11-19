@@ -190,13 +190,14 @@ async function boot() {
 	const fpsEl = $('#fps');
 	let last = performance.now();
 	let acc = 0, steps = 0, clock = 0, frames = 0, fpsAt = last, physMs = 0;
+	const tuning = { timeScale: 1 };   // debug mode slows time through this
 
 	function frame(now) {
 		requestAnimationFrame(frame);
 		const dt = Math.min(0.1, (now - last) / 1000);
 		last = now;
 		clock += dt;
-		acc += dt;
+		acc += dt * tuning.timeScale;
 		const t0 = performance.now();
 		let n = 0;
 		while (acc >= sim.dt && n < maxSteps) {
@@ -256,7 +257,16 @@ async function boot() {
 	});
 
 	// Handy for the browser console and automated checks.
-	window.motionPuppet = { sim, controller, stage, slots, puppet, strings, THREE };
+	window.motionPuppet = { sim, controller, stage, slots, puppet, strings, tuning, THREE };
+
+	// Debug mode: add ?debug (or ?debug=<routine>) to the stage URL for predefined movement
+	// routines that play the puppet without a phone. Loaded only when asked for.
+	const params = new URLSearchParams(location.search);
+	if (params.has('debug')) {
+		import('./debug.js')
+			.then((m) => m.startDebug({ ...window.motionPuppet, toast, refreshHud }, params.get('debug')))
+			.catch((err) => console.error('Debug mode failed to load', err));
+	}
 
 	stage.update(0.016, 0, { x: 0, y: 1.25, z: 0 });
 	stage.render(0.016);

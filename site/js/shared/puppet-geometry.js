@@ -88,6 +88,7 @@ function turnPiece(piece, materials, segments) {
 	mesh.position.set(piece.at[0], piece.at[1], piece.at[2]);
 	mesh.quaternion.set(piece.rot[0], piece.rot[1], piece.rot[2], piece.rot[3]);
 	mesh.scale.set(piece.scale[0], piece.scale[1], piece.scale[2]);
+	mesh.userData.solid = true;   // a real, colliding piece (not a painted detail)
 	return mesh;
 }
 

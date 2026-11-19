@@ -178,7 +178,8 @@ export class StringsView {
 	 */
 	update(pos, quat, handlePos, tension, brokenMask, time, pulls, selected) {
 		// Route every string around the limbs exactly as the simulation does.
-		wrapFrame(this.proxies, pos, quat, this.frame);
+		// (`wrap = false` draws plain straight strings — debug mode uses it to compare.)
+		const frame = this.wrap === false ? NO_PIECES : wrapFrame(this.proxies, pos, quat, this.frame);
 		this.items.forEach((item, i) => {
 			const { def, body, handle, line } = item;
 			const broken = !!(brokenMask & (1 << i));
@@ -190,7 +191,7 @@ export class StringsView {
 			_b.set(handlePos[handle * 3], handlePos[handle * 3 + 1], handlePos[handle * 3 + 2]);
 			item.attach.copy(_a); item.top.copy(_b);
 
-			const path = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], this.frame, item.excluded);
+			const path = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], frame, item.excluded);
 			const pts = path.points;
 			item.points = pts;
 			const rest = Math.max(0.05, item.rest - (pulls ? pulls[i] || 0 : 0));
@@ -269,3 +270,4 @@ export class StringsView {
 	}
 }
 const _white = new THREE.Color(1, 1, 1);
+const NO_PIECES = [];
