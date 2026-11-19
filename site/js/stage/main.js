@@ -17,6 +17,7 @@ import { Stage } from './scene.js';
 const $ = (sel) => document.querySelector(sel);
 const SNAPSHOT_HZ = 40;
 const ROLE_NAMES = ['Puppeteer one', 'Puppeteer two'];
+const TICKET_LINGER = 30000;   // ms the spare ticket stays large after a phone joins, before it folds to a chip
 
 const curtain = $('#curtain');
 const curtainText = $('#curtain-text');
@@ -71,12 +72,42 @@ async function boot() {
 	const phonesLabel = $('#phones-label');
 	const slots = [0, 1].map((slot) => {
 		const el = pairing.querySelector(`[data-slot="${slot}"]`);
-		return { slot, el, qr: el.querySelector('.ticket__qr'), state: el.querySelector('.ticket__state'), link: new HostLink(), seq: -1, got: false, name: '' };
+		return { slot, el, qr: el.querySelector('.ticket__qr'), state: el.querySelector('.ticket__state'), toggle: el.querySelector('.ticket__toggle'), link: new HostLink(), seq: -1, got: false, name: '' };
 	});
+
+	// One ticket at a time is shown large; the other waits as a chip. -1: every free ticket is folded.
+	let featured = 0;
+	let foldTimer = 0;
+	function feature(slot, linger = 0) {
+		featured = slot;
+		clearTimeout(foldTimer);
+		if (linger) foldTimer = setTimeout(() => feature(-1), linger);
+		refreshHud();
+	}
+	/** After a phone joins or leaves: put the free ticket on show (for a while, once the show is on). */
+	function offerTicket() {
+		const free = slots.filter((s) => !s.link.open);
+		feature(free.length ? free[0].slot : -1, free.length === 1 ? TICKET_LINGER : 0);
+	}
+	for (const s of slots) {
+		// Pressing a ticket trades places with the other one (or folds it away when that one is taken).
+		s.toggle.addEventListener('click', () => {
+			const other = slots[1 - s.slot];
+			feature(featured !== s.slot ? s.slot : other.link.open ? -1 : other.slot);
+		});
+	}
 
 	function refreshHud() {
 		const n = controller.phones;
-		pairing.classList.toggle('is-live', n > 0);
+		for (const s of slots) {
+			const big = s.slot === featured && !s.link.open;
+			s.el.classList.toggle('is-featured', big);
+			s.el.classList.toggle('is-folded', !big && !s.link.open);
+			s.toggle.hidden = s.link.open;
+			s.toggle.setAttribute('aria-expanded', big);
+			s.toggle.title = big ? 'Put this ticket away' : 'Show this code large';
+		}
+		pairing.classList.toggle('is-live', n > 0 && !slots.some((s) => s.el.classList.contains('is-featured')));
 		modeLabel.textContent = n ? controller.mode.title : 'Waiting in the wings';
 		phonesLabel.textContent = n === 0
 			? 'No puppeteer yet — the puppet is rehearsing on its own'
@@ -87,6 +118,26 @@ async function boot() {
 		for (const s of slots) if (s.slot !== except && s.link.open) s.link.send(message);
 	}
 	const peers = () => ({ t: 'peers', phones: controller.phones, slots: slots.map((s) => s.link.open) });
+
+	/** Rest pose, strings re-tied, joints unlocked — and every phone but the one that asked lets go of what it holds. */
+	function resetPuppet(from = -1) {
+		controller.setLocks([]);
+		controller.reset();
+		broadcast({ t: 'reset' }, from);
+		toast('Puppet reset');
+	}
+	$('#btn-reset').addEventListener('click', () => resetPuppet());
+
+	// Bare stage: tickets, titles and the playbill step out; a faint eye in the corner brings them back.
+	const uiButton = $('#btn-ui');
+	function setBare(bare) {
+		document.body.classList.toggle('is-bare', bare);
+		uiButton.setAttribute('aria-pressed', bare);
+		uiButton.title = bare ? 'Show the tickets and titles (H)' : 'Hide the tickets and titles (H)';
+		$('#btn-ui-label').textContent = bare ? 'Show' : 'Hide';
+		toast(bare ? 'Stage cleared — press H to bring everything back' : 'Tickets and titles are back');
+	}
+	uiButton.addEventListener('click', () => setBare(!document.body.classList.contains('is-bare')));
 
 	for (const s of slots) {
 		const link = s.link;
@@ -113,7 +164,7 @@ async function boot() {
 			broadcast(peers(), s.slot);
 			if (controller.phones === 1) controller.play('greet');
 			toast(`${ROLE_NAMES[s.slot]} has taken the strings`);
-			refreshHud();
+			offerTicket();
 		};
 		link.onclose = (wasOpen) => {
 			if (wasOpen) {
@@ -126,7 +177,7 @@ async function boot() {
 			s.qr.classList.add('is-empty');
 			s.qr.innerHTML = '';
 			s.state.textContent = 'Preparing a fresh code…';
-			refreshHud();
+			if (wasOpen) offerTicket(); else refreshHud();
 			link.listen();
 		};
 		link.onpacket = (buffer) => {
@@ -154,7 +205,7 @@ async function boot() {
 					}
 					break;
 				case 'act': if (typeof msg.id === 'string') controller.action(msg.id.slice(0, 16)); break;
-				case 'reset': controller.reset(); toast('Puppet reset'); break;
+				case 'reset': resetPuppet(s.slot); break;
 				case 'cal': toast(`${ROLE_NAMES[s.slot]} calibrated`); break;
 				default: break;
 			}
@@ -248,7 +299,8 @@ async function boot() {
 
 	window.addEventListener('keydown', (e) => {
 		if (e.target instanceof HTMLInputElement) return;
-		if (e.key === 'r') controller.reset();
+		if (e.key === 'r') resetPuppet();
+		if (e.key === 'h' && !e.repeat) uiButton.click();
 		if (e.key === 'q') { stage.setQuality((stage.quality + 2) % 3); resize(); toast(`Quality: ${['low', 'medium', 'high'][stage.quality]}`); }
 		if (e.key === 'd') fpsEl.hidden = !fpsEl.hidden;
 		if (e.key === 'f' && document.documentElement.requestFullscreen) {
