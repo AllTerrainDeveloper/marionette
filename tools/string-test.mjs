@@ -117,33 +117,44 @@ function watch(label, { idle = false, drive = null, settle = 8, seconds = 10 }) 
 // 2. The stage's idle drift: strings follow the bar smoothly.
 { const r = watch('idle drift', { idle: true }); check('strings follow the idle drift without jumping', r.worst < 0.008 && r.snaps === 0, `largest movement ${(r.worst * 1000).toFixed(2)} mm per frame`); }
 
-// 3. Ordinary play: the bar tilts and turns gently, strings loosen and tighten.
-{
-	const tilt = (sim, t) => {
-		const q = M.qFromYPR(0.5 * Math.sin(t * 1.2), 0.35 * Math.sin(t * 0.9), 0.4 * Math.sin(t * 1.5));
-		RIG.bars.forEach((b, k) => { sim.ctl.bars[k].pos = M.add(RIG.home, M.qRot(q, b.offset)); sim.ctl.bars[k].quat = q; });
-	};
-	const r = watch('gentle tilting', { drive: tilt, settle: 3, seconds: 14 });
-	// A loose string following a swinging foot moves a centimetre a frame without jumping, and
-	// now and then a tight string finds another way round a limb and slides over to it.
-	check('strings do not jump in gentle play', r.snaps <= 1 && r.worst < 0.05, `${r.snaps} snap(s), largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
-	check('nor pass through the puppet', r.ownShare < 0.001 && r.otherShare < 0.005, `own limb ${(r.ownShare * 100).toFixed(2)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
-	if (false) check('strings seldom jump in gentle play', r.jumps < 0.01, `${(r.jumps * 100).toFixed(2)}% of frames, worst ${(r.worst * 1000).toFixed(1)} mm`);
+/** The same kind of play from several starting points (it is chaotic: one run proves little), added up. */
+function several(label, driveFrom, starts, options) {
+	const runs = starts.map((start) => watch(`${label}, start ${start}`, { ...options, drive: driveFrom(start) }));
+	const sum = (key) => runs.reduce((a, r) => a + r[key], 0), most = (key) => Math.max(...runs.map((r) => r[key]));
+	return { snaps: sum('snaps'), worstSnap: most('worstSnap'), worst: most('worst'), ownShare: sum('ownShare') / runs.length, otherShare: sum('otherShare') / runs.length, ownDeep: most('ownDeep'), under: most('under'), resets: sum('resets'), minutes: runs.length * options.seconds / 60 };
 }
 
-// 4. A lively performance: strings go slack and tight all the time.
+// 3. Ordinary play: the bar tilts and turns gently, strings loosen and tighten.
 {
-	const perform = (sim, t) => {
-		const q = M.qFromYPR(Math.sin(t * 1.1) * 0.9, Math.sin(t * 1.7) * 0.7, Math.cos(t * 1.3) * 0.7);
+	const tilt = (start) => (sim, t) => {
+		const T = t + start;
+		const q = M.qFromYPR(0.5 * Math.sin(T * 1.2), 0.35 * Math.sin(T * 0.9), 0.4 * Math.sin(T * 1.5));
 		RIG.bars.forEach((b, k) => { sim.ctl.bars[k].pos = M.add(RIG.home, M.qRot(q, b.offset)); sim.ctl.bars[k].quat = q; });
-		sim.ctl.pull[4] = 0.3 + 0.3 * Math.sin(t * 2); sim.ctl.pull[5] = 0.3 + 0.3 * Math.cos(t * 1.6); sim.ctl.pull[6] = 0.2 + 0.2 * Math.sin(t * 2.4);
 	};
-	const r = watch('performing', { drive: perform, settle: 2, seconds: 14 });
-	// A lively puppet throws its loose strings about: they move far, every frame. What must
-	// not happen is a string appearing somewhere else, or sitting inside a limb.
-	check('strings do not jump while performing', r.snaps <= 3 && r.worst < 0.08, `${r.snaps} snap(s), largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
-	check('and are rarely inside a limb even then', r.ownShare < 0.005 && r.otherShare < 0.03, `own limb ${(r.ownShare * 100).toFixed(2)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
-	if (false) check('strings seldom jump while performing', r.jumps < 0.1, `${(r.jumps * 100).toFixed(2)}% of frames, worst ${(r.worst * 1000).toFixed(1)} mm`);
+	const r = several('gentle tilting', tilt, [0, 13, 33, 58, 71, 95], { settle: 3, seconds: 20 });
+	// A loose string following a swinging foot moves a centimetre or two a frame without
+	// jumping. What is left, about once a minute, is a string squeezed out of the crook of a
+	// closing knee or elbow in one frame: two to three centimetres, and nowhere else to go.
+	check('strings do not jump in gentle play', r.snaps <= r.minutes && r.worstSnap < 0.03 && r.worst < 0.035, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min${r.snaps ? ` (largest ${(r.worstSnap * 1000).toFixed(0)} mm)` : ''}, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
+	check('nor pass through the puppet', r.ownShare < 0.0005 && r.otherShare < 0.002, `own limb ${(r.ownShare * 100).toFixed(3)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
+	check('nor go below the floor', r.under <= 0 && r.resets === 0, `lowest ${(r.under * 1000).toFixed(1)} mm under`);
+}
+
+// 4. A violent performance, far beyond what a phone asks for: the bar thrown about, strings
+//    hauled in and let out by half a metre, limbs at three or four metres a second.
+{
+	const perform = (start) => (sim, t) => {
+		const T = t + start;
+		const q = M.qFromYPR(Math.sin(T * 1.1) * 0.9, Math.sin(T * 1.7) * 0.7, Math.cos(T * 1.3) * 0.7);
+		RIG.bars.forEach((b, k) => { sim.ctl.bars[k].pos = M.add(RIG.home, M.qRot(q, b.offset)); sim.ctl.bars[k].quat = q; });
+		sim.ctl.pull[4] = 0.3 + 0.3 * Math.sin(T * 2); sim.ctl.pull[5] = 0.3 + 0.3 * Math.cos(T * 1.6); sim.ctl.pull[6] = 0.2 + 0.2 * Math.sin(T * 2.4);
+	};
+	const r = several('thrown about', perform, [0, 13, 33, 58, 71, 95], { settle: 2, seconds: 20 });
+	// A limb moving six centimetres a frame takes a string six centimetres with it, and that
+	// is right. What must stay rare is a string appearing somewhere else, or sitting in a limb.
+	check('strings seldom jump even when the puppet is thrown about', r.snaps <= 3 * r.minutes, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min${r.snaps ? ` (largest ${(r.worstSnap * 1000).toFixed(0)} mm)` : ''}, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
+	check('and are next to never in their own limb, rarely in another', r.ownShare < 0.001 && r.otherShare < 0.01, `own limb ${(r.ownShare * 100).toFixed(3)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
+	check('nor below the floor', r.under <= 0 && r.resets === 0, `lowest ${(r.under * 1000).toFixed(1)} mm under`);
 }
 
 // 5. Hanging: the bar lifted so the feet are off the floor. Nothing may jump out of control,
