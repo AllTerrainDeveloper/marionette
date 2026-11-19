@@ -207,7 +207,8 @@ body::after {
 /* --- bare stage: press H and everything but the performer steps out ------ */
 
 .marquee, .playbill { transition: opacity 0.4s, visibility 0.4s; }
-.is-bare .marquee, .is-bare .playbill, .is-bare .pairing, .is-bare #btn-reset { opacity: 0; visibility: hidden; pointer-events: none; }
+.is-bare .marquee, .is-bare .playbill, .is-bare .pairing, .is-bare #btn-reset, .is-bare #btn-knots { opacity: 0; visibility: hidden; pointer-events: none; }
+#btn-knots[aria-pressed="true"] { border-color: rgba(226, 180, 87, 0.75); color: #f3d38a; }
 /* All that is left is a faint eye in the corner to bring it back. */
 .is-bare #btn-ui { padding: 7px; border-color: transparent; background: none; opacity: 0.45; }
 .is-bare #btn-ui:hover, .is-bare #btn-ui:focus-visible { opacity: 1; background: rgba(20, 10, 9, 0.72); border-color: rgba(226, 180, 87, 0.35); }

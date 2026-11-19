@@ -9,6 +9,7 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { BODIES, BARS, HANDLES, RIG_HOME, STRING_WEIGHT } from './rig-config.js';
 import { buildWrapProxies, effectiveAttach, stringExclusions, wrapFrame, stringPath } from './string-path.js';
 import { StringShape } from './string-shape.js';
+import { Tangles, withKnots } from './string-tangle.js';
 
 const SEGMENTS = 44;             // straight pieces a string is drawn with
 const _a = new THREE.Vector3();
@@ -128,6 +129,7 @@ export class StringsView {
 		this.items = [];
 		this.resolution = new THREE.Vector2(1024, 768);
 		this.proxies = buildWrapProxies(BODIES);
+		this.tangles = new Tangles();   // strings catching on each other: off unless `tangles.enabled` is set
 		this.frame = [];
 	}
 
@@ -210,7 +212,10 @@ export class StringsView {
 			_b.set(handlePos[handle * 3], handlePos[handle * 3 + 1], handlePos[handle * 3 + 2]);
 			item.attach.copy(_a); item.top.copy(_b);
 
-			const pts = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], frame, item.excluded, undefined, item.memory).points;
+			let pts = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], frame, item.excluded, undefined, item.memory).points;
+			// A string another string holds goes through the place where it is held.
+			if (this.tangles.enabled && !broken) pts = withKnots(pts, this.tangles.knots[i]);
+			item.broken = broken;
 			item.points = pts;
 			const rest = Math.max(0.05, item.rest - (pulls ? pulls[i] || 0 : 0));
 			const t = tension[i] || 0;
@@ -241,7 +246,27 @@ export class StringsView {
 				mat.opacity = broken ? 0.4 : 0.9;
 			}
 		});
+		// Strings catching on each other, if that is switched on: the chains are kept from passing
+		// through one another, and the crossings that hold are noted for the next routing.
+		if (this.tangles.enabled) {
+			const input = this._tangled || (this._tangled = []);
+			input.length = this.items.length;
+			this.items.forEach((item, i) => {
+				const entry = input[i] || (input[i] = {});
+				entry.shape = item.shape; entry.active = item.line.visible && !item.broken; entry.tension = (tension[i] || 0) * (item.def.max || 0);
+			});
+			this.tangles.update(input);
+		} else if (this.tangles.prev.length || this.tangles.knots.length) this.tangles.clear();
 	}
+
+	/** Lays every string out afresh on its route and forgets what was tangled with what (a reset). */
+	relay() {
+		for (const item of this.items) item.shape.live = false;
+		this.tangles.clear();
+	}
+
+	/** Where strings hold each other, per string (for PuppetSim.setKnots); null with tangling off. */
+	knots() { return this.tangles.enabled ? this.tangles.knots : null; }
 }
 const _white = new THREE.Color(1, 1, 1);
 const NO_PIECES = [];

@@ -762,7 +762,11 @@ export class StringForce {
 		this.tension = 0;
 	}
 
-	/** Lays the string out for this step: nodes are [{ body, local: [x, y, z] }], attachment last. */
+	/**
+	 * Lays the string out for this step: nodes are [{ body, local: [x, y, z] }], attachment last.
+	 * A node with body -1 is a fixed place in the world (`local` is that place): the string
+	 * bends there as round a pulley nothing can move — where another string holds it.
+	 */
 	route(handle, nodes, rest, max, fresh = 0) {
 		this.active = true;
 		this.fresh = fresh;
@@ -780,7 +784,7 @@ export class StringForce {
 			const node = nodes[k];
 			this.nodeBody[k] = node.body;
 			this.local[k * 3] = node.local[0]; this.local[k * 3 + 1] = node.local[1]; this.local[k * 3 + 2] = node.local[2];
-			if (!this.bodies.includes(node.body)) this.bodies.push(node.body);
+			if (node.body >= 0 && !this.bodies.includes(node.body)) this.bodies.push(node.body);
 		}
 		this.rest = rest;
 		this.max = max;
@@ -796,7 +800,9 @@ export class StringForce {
 		const n = this.count, world = this.world, lever = this.lever, grad = this.grad, local = this.local;
 		world[0] = this.handle[0]; world[1] = this.handle[1]; world[2] = this.handle[2];
 		for (let k = 0; k < n; k++) {
-			const B = s.bodies[this.nodeBody[k]], o = k * 3;
+			const o = k * 3;
+			if (this.nodeBody[k] < 0) { lever[o] = lever[o + 1] = lever[o + 2] = 0; world[o + 3] = local[o]; world[o + 4] = local[o + 1]; world[o + 5] = local[o + 2]; continue; }
+			const B = s.bodies[this.nodeBody[k]];
 			rot(B.q, local[o], local[o + 1], local[o + 2], lever, o);
 			world[o + 3] = B.x[0] + lever[o]; world[o + 4] = B.x[1] + lever[o + 1]; world[o + 5] = B.x[2] + lever[o + 2];
 		}

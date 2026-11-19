@@ -124,10 +124,33 @@ async function boot() {
 	function resetPuppet(from = -1) {
 		controller.setLocks([]);
 		controller.reset();
+		strings.relay();
+		sim.setKnots(null);
 		broadcast({ t: 'reset' }, from);
 		toast('Puppet reset');
 	}
 	$('#btn-reset').addEventListener('click', () => resetPuppet());
+
+	// Tangling: strings catching on each other. Off unless someone asks for it (the button, K,
+	// or ?knots in the address); remembered on this device.
+	const knotsButton = $('#btn-knots');
+	const KNOTS_KEY = 'motion-puppet-knots';
+	function setKnots(on, quiet = false, remember = true) {
+		strings.tangles.enabled = on;
+		if (!on) sim.setKnots(null);
+		knotsButton.setAttribute('aria-pressed', on);
+		$('#btn-knots-label').textContent = on ? 'Tangles on' : 'Tangles off';
+		if (remember) try { localStorage.setItem(KNOTS_KEY, on ? '1' : '0'); } catch { /* private mode: not remembered */ }
+		if (!quiet) toast(on ? 'Strings now catch on each other — Reset untangles them' : 'Strings pass through each other again');
+	}
+	knotsButton.addEventListener('click', () => setKnots(!strings.tangles.enabled));
+	{
+		let stored = null;
+		try { stored = localStorage.getItem(KNOTS_KEY); } catch { /* ignore */ }
+		const asked = new URLSearchParams(location.search);
+		// (?knots tries it for this visit only; the button is what is remembered.)
+		if (asked.has('knots') ? asked.get('knots') !== '0' : stored === '1') setKnots(true, true, false);
+	}
 
 	// Bare stage: tickets, titles and the playbill step out; a faint eye in the corner brings them back.
 	const uiButton = $('#btn-ui');
@@ -327,6 +350,7 @@ async function boot() {
 		sim.strings.forEach((s, i) => { tensionNorm[i] = sim.tension[i] / s.def.max; if (s.broken) brokenMask |= 1 << i; });
 		strings.update(ipos, iquat, sim.handlePos, tensionNorm, brokenMask, clock, sim.ctl.pull);
 		sim.setStringLoads(strings.loads(stringLoads));
+		if (strings.tangles.enabled) sim.setKnots(strings.knots());
 
 		stage.update(dt, clock, { x: ipos[chest * 3], y: ipos[chest * 3 + 1], z: ipos[chest * 3 + 2] });
 		stage.render(dt);
@@ -343,6 +367,7 @@ async function boot() {
 	window.addEventListener('keydown', (e) => {
 		if (e.target instanceof HTMLInputElement) return;
 		if (e.key === 'r') resetPuppet();
+		if (e.key === 'k' && !e.repeat) knotsButton.click();
 		if (e.key === 'h' && !e.repeat) uiButton.click();
 		if (e.key === 'q') { stage.setQuality((stage.quality + 2) % 3); resize(); toast(`Quality: ${['low', 'medium', 'high'][stage.quality]}`); }
 		if (e.key === 'd') fpsEl.hidden = !fpsEl.hidden;

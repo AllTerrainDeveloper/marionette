@@ -273,7 +273,7 @@ export class PuppetSim {
 		});
 		this.contacts.clear();
 		for (const j of this.joints) j.force.reset();
-		this.strings.forEach((s) => { s.broken = false; s.over = 0; s.tension = 0; s.force.release(); s.memory.vias = null; s.nodes = null; });
+		this.strings.forEach((s) => { s.broken = false; s.over = 0; s.tension = 0; s.force.release(); s.memory.vias = null; s.nodes = s.base = null; s.knots = null; });
 		this.handleOff.forEach((o, i) => { o[0] = c.handleOffset[i][0]; o[1] = c.handleOffset[i][1]; o[2] = c.handleOffset[i][2]; });
 		this._placeHandles(0);
 		this._readBack(true);
@@ -381,12 +381,12 @@ export class PuppetSim {
 		const reroute = this._routeTick++ % every === 0;
 		const frame = !reroute ? null : this.opts.stringCollision ? wrapFrame(this.wrapProxies, this.pos, this.quat, this._wrapFrame) : this._noBodies;
 		this.strings.forEach((s, i) => {
-			if (!s.def.enabled || s.broken || gain < 0.001) { s.path = null; s.nodes = null; s.force.release(); return; }
+			if (!s.def.enabled || s.broken || gain < 0.001) { s.path = null; s.nodes = s.base = null; s.force.release(); return; }
 			const handle = this.handleAt(s.handle);
-			if (reroute || !s.nodes) {
+			if (reroute || !s.base) {
 				const attach = M.add(this.bodyPos(s.body), M.qRot(this.bodyQuat(s.body), s.at));
 				const path = stringPath(handle, attach, frame || this._noBodies, s.excluded, undefined, s.memory);
-				if (path.length < 1e-6) { s.path = null; s.nodes = null; s.force.release(); return; }
+				if (path.length < 1e-6) { s.path = null; s.nodes = s.base = null; s.force.release(); return; }
 				s.path = path;
 				const pts = path.points;
 				const n = pts.length - 1;
@@ -396,7 +396,28 @@ export class PuppetSim {
 					nodes.push({ body, local: M.qRot(M.qConj(this.bodyQuat(body)), M.sub(pts[k], this.bodyCom(body))) });
 				}
 				nodes.push({ body: s.body, local: s.local });
-				s.nodes = nodes;
+				s.base = nodes;
+				s.relay = true;
+			}
+			if (s.relay) {
+				s.relay = false;
+				s.nodes = s.base;
+				// Places where another string holds this one go in where they lengthen it least.
+				if (s.knots) {
+					const nodes = s.base.slice();
+					const world = nodes.map((node) => M.add(this.bodyCom(node.body), M.qRot(this.bodyQuat(node.body), node.local)));
+					for (const knot of s.knots) {
+						let best = 0, least = Infinity;
+						for (let k = 0; k < world.length; k++) {
+							const a = k ? world[k - 1] : handle, b = world[k];
+							const more = M.dist(a, knot.at) + M.dist(knot.at, b) - M.dist(a, b);
+							if (more < least) { least = more; best = k; }
+						}
+						nodes.splice(best, 0, { body: -1, local: knot.at });
+						world.splice(best, 0, knot.at);
+					}
+					s.nodes = nodes;
+				}
 			}
 			const nodes = s.nodes;
 			// A string that is suddenly much too short (pulled in, or tied back on while the
@@ -405,7 +426,7 @@ export class PuppetSim {
 			const from = s.force.active ? s.force.rest : s.path.length;
 			const rest = from > target ? Math.max(target, from - REEL_SPEED * this.dt) : target;
 			// How much the handle's own motion and the reeling-in lengthen the path this step.
-			const first = M.add(this.bodyCom(nodes[0].body), M.qRot(this.bodyQuat(nodes[0].body), nodes[0].local));
+			const first = nodes[0].body < 0 ? nodes[0].local : M.add(this.bodyCom(nodes[0].body), M.qRot(this.bodyQuat(nodes[0].body), nodes[0].local));
 			const h = s.handle * 3, d = M.norm(M.sub(first, handle));
 			const fresh = -(this.handleVel[h] * d[0] + this.handleVel[h + 1] * d[1] + this.handleVel[h + 2] * d[2]) * this.dt + (from > rest ? from - rest : 0);
 			s.force.route(handle, nodes, rest, s.def.max * gain, fresh);
@@ -735,6 +756,20 @@ export class PuppetSim {
 			const q = [this.quat[body * 4], this.quat[body * 4 + 1], this.quat[body * 4 + 2], this.quat[body * 4 + 3]];
 			loads.push({ body, local: M.qRot(M.qConj(q), [at[0] - this.pos[body * 3], at[1] - this.pos[body * 3 + 1], at[2] - this.pos[body * 3 + 2]]), weight: Math.min(weight, 2) });
 		}
+	}
+
+	/**
+	 * Where strings hold each other (string-tangle.js), per string: [[{ at: [x, y, z] }, ...], ...]
+	 * or null. Each string is routed through its places as round pulleys fixed in the world,
+	 * until the next call. Only used with tangling switched on.
+	 */
+	setKnots(perString) {
+		this.strings.forEach((s, i) => {
+			const knots = perString && perString[i] && perString[i].length ? perString[i] : null;
+			if (!knots && !s.knots) return;
+			s.knots = knots;
+			s.relay = true;   // lay the string out again
+		});
 	}
 
 	_applyStringLoads() {
