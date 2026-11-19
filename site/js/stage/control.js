@@ -100,6 +100,11 @@ class Gait {
 	}
 }
 
+/** How many one-tap moves play at the same time; a further one makes the oldest bow out ... */
+const MOVES_AT_ONCE = 1;
+/** ... over this long (s). */
+const MOVE_FADE = 0.35;
+
 export class Controller {
 	constructor(sim, rig = RIG) {
 		this.sim = sim;
@@ -172,7 +177,14 @@ export class Controller {
 
 	/** Starts a scripted move. One already under way is left to finish rather than stacked on itself. */
 	play(id) {
-		if (Object.hasOwn(GESTURES, id) && !this.gestures.some((gesture) => gesture.id === id)) this.gestures.push({ id, t: 0 });
+		if (!Object.hasOwn(GESTURES, id) || this.gestures.some((gesture) => gesture.id === id && !gesture.leaving)) return;
+		// Moves take turns. Their pushes and pulls simply add up, and three or four at once —
+		// someone tapping through the list — throw the puppet about at ten metres a second.
+		// So a new move takes over: the ones still playing (all but the newest MOVES_AT_ONCE - 1)
+		// bow out over a third of a second.
+		const playing = this.gestures.filter((gesture) => !gesture.leaving);
+		for (let k = 0; k <= playing.length - MOVES_AT_ONCE; k++) playing[k].leaving = true;
+		this.gestures.push({ id, t: 0, weight: 1, leaving: false });
 	}
 
 	action(id) {
@@ -260,7 +272,12 @@ export class Controller {
 			gesture.t += dt;
 			const u = gesture.t / def.dur;
 			if (u >= 1) return false;
-			def.run(add, u, Math.sin(u * Math.PI) ** 2, this.t, !!cfg.ikAlways);
+			if (gesture.leaving) {
+				gesture.weight -= dt / MOVE_FADE;
+				if (gesture.weight <= 0) return false;
+				const weight = gesture.weight * gesture.weight * (3 - 2 * gesture.weight);
+				def.run((key, value) => add(key, value * weight), u, Math.sin(u * Math.PI) ** 2, this.t, !!cfg.ikAlways);
+			} else def.run(add, u, Math.sin(u * Math.PI) ** 2, this.t, !!cfg.ikAlways);
 			return true;
 		});
 
