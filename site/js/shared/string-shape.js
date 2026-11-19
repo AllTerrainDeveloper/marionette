@@ -45,7 +45,7 @@ const TURN_REACH = 0.25;           // how far from the tie (m, along the string)
 const TURN_SLACK = 0.05;           // spare length (m) from which it does so fully
 const HEAL_DEPTH = -0.0005;        // how far into its own limb (m, negative) the end of a string may cut before it is laid round it ...
 const HEAL_REACH = 0.06;           // ... and the furthest sideways (m) that may move a point; beyond it the easing has to do
-const STEADY = 0.019;              // sideways movement per frame (m) that needs no run-up ...
+const STEADY = 0.0199;              // sideways movement per frame (m) that needs no run-up ...
 const GROW = 2.4;                  // ... and how many times last frame's movement is allowed beyond that
 const CATCH_UP = 0.5;              // share of the gap to the chain that what is drawn closes per frame when it is far behind
 const PINCH = -0.0015;             // a string squeezed between two pieces may be this close to the wood (m; negative: a touch inside, where two limbs press together)
@@ -86,6 +86,8 @@ export class StringShape {
 		this.shiftOut = new Float32Array(size); // ... and each drawn point
 		this.ref = new Float32Array(size);      // what was drawn last time, carried along with the two ends
 		this.swing = 0;                         // how far the drawn string moved sideways last time (m)
+		this.rigid = new Float32Array(size);    // the end of what was drawn last time, carried round with the limb it is tied to
+		this.rigidFrom = links;                 // ... from this point on
 	}
 
 	/**
@@ -151,8 +153,8 @@ export class StringShape {
 		// Slack close to where the string is tied goes round with the limb it is tied to, not
 		// just along with it: carried by the tie point's travel alone, a loop of slack beside a
 		// foot that turns would stay put while the shoe turned into it.
-		let turn = null, grip = 0;
-		if (!broken && this.posed && ownBody >= 0 && slack > 0) {
+		let turn = null, grip = 0, spin = null;
+		if (!broken && this.posed && ownBody >= 0) {
 			let piece = this.ownPiece;
 			if (!(piece >= 0 && piece < pieces.length && pieces[piece].body === ownBody)) {
 				piece = -1;
@@ -162,12 +164,24 @@ export class StringShape {
 			const w = piece * 7;
 			if (piece >= 0 && w + 6 < this.was.length) {
 				_q[0] = -this.was[w + 3]; _q[1] = -this.was[w + 4]; _q[2] = -this.was[w + 5]; _q[3] = this.was[w + 6];
-				turn = qMul(pieces[piece].q, _q);
-				if (Math.abs(turn[0]) + Math.abs(turn[1]) + Math.abs(turn[2]) < 1e-6) turn = null;
-				grip = Math.min(1, slack / TURN_SLACK);
+				spin = qMul(pieces[piece].q, _q);
+				if (slack > 0 && Math.abs(spin[0]) + Math.abs(spin[1]) + Math.abs(spin[2]) >= 1e-6) { turn = spin; grip = Math.min(1, slack / TURN_SLACK); }
 			}
 		}
 		const shift = this.shift, shiftOut = this.shiftOut;
+		// Where the end of what was drawn would be had it simply stayed put on the limb it is tied to.
+		const rigid = this.rigid;
+		this.rigidFrom = n;
+		if (spin) {
+			const tx = end[0] - bx, ty = end[1] - by, tz = end[2] - bz;
+			this.rigidFrom = Math.max(1, n - TIE_LINKS - 1);
+			for (let k = this.rigidFrom; k < n; k++) {
+				const o = k * 3;
+				_v[0] = out[o] - tx; _v[1] = out[o + 1] - ty; _v[2] = out[o + 2] - tz;
+				const r = qRot(spin, _v);
+				rigid[o] = end[0] + r[0]; rigid[o + 1] = Math.max(FLOOR, end[1] + r[1]); rigid[o + 2] = end[2] + r[2];
+			}
+		}
 		const ref = this.ref;
 		for (let k = 0; k <= n; k++) { const u = k / n, o = k * 3; ref[o] = out[o] + ax + (bx - ax) * u; ref[o + 1] = out[o + 1] + ay + (by - ay) * u; ref[o + 2] = out[o + 2] + az + (bz - az) * u; }
 		if (ax || ay || az || bx || by || bz || turn) {
@@ -486,6 +500,31 @@ export class StringShape {
 					for (let k = 3; k < n * 3; k++) out[k] = _held[k] + (_there[k] - _held[k]) * lo;
 					swing = this._swing();
 				}
+			}
+		}
+		// Still cutting it: then the stretch in trouble stays where it was on the limb a frame
+		// ago, when it was clear — widened point by point until the whole end of the string is
+		// clear of the limb, and only if that is no leap either.
+		if (own.length && !broken && this.rigidFrom < n) {
+			const first = Math.max(0, n - TIE_LINKS);
+			let c0 = -1, c1 = -1;
+			for (let k = first; k < n; k++) if (this._cuts(out, k, own)) { if (c0 < 0) c0 = k; c1 = k + 1; }
+			if (c0 >= 0) {
+				_held.set(out);
+				let done = false;
+				for (let widen = 0; widen <= TIE_LINKS && !done; widen++) {
+					const from = Math.max(this.rigidFrom, c0 - widen), to = Math.min(n - 1, c1 + widen);
+					for (let k = from * 3; k < (to + 1) * 3; k++) out[k] = rigid[k];
+					let clear = true;
+					for (let k = first; k < n && clear; k++) clear = !this._cuts(out, k, own);
+					if (clear) {
+						const stayed = this._swing();
+						if (stayed <= most) { swing = stayed; done = true; }
+						else break;   // wider only turns it further
+					}
+					if (from === this.rigidFrom && to === n - 1) break;
+				}
+				if (!done) out.set(_held.subarray(0, out.length));
 			}
 		}
 		this.swing = swing;
