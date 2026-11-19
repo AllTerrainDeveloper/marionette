@@ -153,7 +153,7 @@ function several(label, driveFrom, starts, options) {
 	// A limb moving six centimetres a frame takes a string six centimetres with it, and that
 	// is right. What must stay rare is a string appearing somewhere else, or sitting in a limb.
 	check('strings seldom jump even when the puppet is thrown about', r.snaps <= 3 * r.minutes, `${r.snaps} snap(s) in ${r.minutes.toFixed(0)} min${r.snaps ? ` (largest ${(r.worstSnap * 1000).toFixed(0)} mm)` : ''}, largest move in a frame ${(r.worst * 1000).toFixed(1)} mm`);
-	check('and are next to never in their own limb, rarely in another', r.ownShare < 0.001 && r.otherShare < 0.01, `own limb ${(r.ownShare * 100).toFixed(3)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
+	check('and are next to never in their own limb, rarely in another', r.ownShare < 0.0003 && r.otherShare < 0.01, `own limb ${(r.ownShare * 100).toFixed(3)}% of string-frames, another part ${(r.otherShare * 100).toFixed(2)}%`);
 	check('nor below the floor', r.under <= 0 && r.resets === 0, `lowest ${(r.under * 1000).toFixed(1)} mm under`);
 }
 
