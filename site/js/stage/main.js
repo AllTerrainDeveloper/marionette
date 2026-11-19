@@ -17,6 +17,7 @@ import { Stage } from './scene.js';
 const $ = (sel) => document.querySelector(sel);
 const SNAPSHOT_HZ = 40;
 const ROLE_NAMES = ['Puppeteer one', 'Puppeteer two'];
+const TICKET_LINGER = 30000;   // ms the spare ticket stays large after a phone joins, before it folds to a chip
 
 const curtain = $('#curtain');
 const curtainText = $('#curtain-text');
@@ -45,7 +46,7 @@ async function boot() {
 	const sim = new PuppetSim(RAPIER);
 	const controller = new Controller(sim);
 	// Let the puppet settle onto its strings before the curtain rises.
-	for (let i = 0; i < sim.opts.hz * 1.5; i++) { controller.update(); sim.step(); }
+	for (let i = 0; i < sim.opts.hz * 4; i++) { controller.update(); sim.step(); }   // let the puppet come to rest before the curtain opens
 
 	const canvas = $('#stage');
 	const stage = new Stage(canvas);
@@ -53,6 +54,7 @@ async function boot() {
 	stage.scene.add(puppet.root);
 	const rigView = new RigView({ materials: puppet.materials });
 	stage.scene.add(rigView.group);
+	const stringLoads = [];
 	const strings = new StringsView({ width: 1.5, color: 0xeadfc6, eyeMaterial: puppet.materials.brass, parts: puppet.parts });
 	stage.scene.add(strings.group);
 	let shownStrings = null;
@@ -71,12 +73,42 @@ async function boot() {
 	const phonesLabel = $('#phones-label');
 	const slots = [0, 1].map((slot) => {
 		const el = pairing.querySelector(`[data-slot="${slot}"]`);
-		return { slot, el, qr: el.querySelector('.ticket__qr'), state: el.querySelector('.ticket__state'), link: new HostLink(), seq: -1, got: false, name: '' };
+		return { slot, el, qr: el.querySelector('.ticket__qr'), state: el.querySelector('.ticket__state'), toggle: el.querySelector('.ticket__toggle'), link: new HostLink(), seq: -1, got: false, name: '' };
 	});
+
+	// One ticket at a time is shown large; the other waits as a chip. -1: every free ticket is folded.
+	let featured = 0;
+	let foldTimer = 0;
+	function feature(slot, linger = 0) {
+		featured = slot;
+		clearTimeout(foldTimer);
+		if (linger) foldTimer = setTimeout(() => feature(-1), linger);
+		refreshHud();
+	}
+	/** After a phone joins or leaves: put the free ticket on show (for a while, once the show is on). */
+	function offerTicket() {
+		const free = slots.filter((s) => !s.link.open);
+		feature(free.length ? free[0].slot : -1, free.length === 1 ? TICKET_LINGER : 0);
+	}
+	for (const s of slots) {
+		// Pressing a ticket trades places with the other one (or folds it away when that one is taken).
+		s.toggle.addEventListener('click', () => {
+			const other = slots[1 - s.slot];
+			feature(featured !== s.slot ? s.slot : other.link.open ? -1 : other.slot);
+		});
+	}
 
 	function refreshHud() {
 		const n = controller.phones;
-		pairing.classList.toggle('is-live', n > 0);
+		for (const s of slots) {
+			const big = s.slot === featured && !s.link.open;
+			s.el.classList.toggle('is-featured', big);
+			s.el.classList.toggle('is-folded', !big && !s.link.open);
+			s.toggle.hidden = s.link.open;
+			s.toggle.setAttribute('aria-expanded', big);
+			s.toggle.title = big ? 'Put this ticket away' : 'Show this code large';
+		}
+		pairing.classList.toggle('is-live', n > 0 && !slots.some((s) => s.el.classList.contains('is-featured')));
 		modeLabel.textContent = n ? controller.mode.title : 'Waiting in the wings';
 		phonesLabel.textContent = n === 0
 			? 'No puppeteer yet — the puppet is rehearsing on its own'
@@ -87,6 +119,49 @@ async function boot() {
 		for (const s of slots) if (s.slot !== except && s.link.open) s.link.send(message);
 	}
 	const peers = () => ({ t: 'peers', phones: controller.phones, slots: slots.map((s) => s.link.open) });
+
+	/** Rest pose, strings re-tied, joints unlocked — and every phone but the one that asked lets go of what it holds. */
+	function resetPuppet(from = -1) {
+		controller.setLocks([]);
+		controller.reset();
+		strings.relay();
+		sim.setKnots(null);
+		broadcast({ t: 'reset' }, from);
+		toast('Puppet reset');
+	}
+	$('#btn-reset').addEventListener('click', () => resetPuppet());
+
+	// Tangling: strings catching on each other. Off unless someone asks for it (the button, K,
+	// or ?knots in the address); remembered on this device.
+	const knotsButton = $('#btn-knots');
+	const KNOTS_KEY = 'motion-puppet-knots';
+	function setKnots(on, quiet = false, remember = true) {
+		strings.tangles.enabled = on;
+		if (!on) sim.setKnots(null);
+		knotsButton.setAttribute('aria-pressed', on);
+		$('#btn-knots-label').textContent = on ? 'Tangles on' : 'Tangles off';
+		if (remember) try { localStorage.setItem(KNOTS_KEY, on ? '1' : '0'); } catch { /* private mode: not remembered */ }
+		if (!quiet) toast(on ? 'Strings now catch on each other — Reset untangles them' : 'Strings pass through each other again');
+	}
+	knotsButton.addEventListener('click', () => setKnots(!strings.tangles.enabled));
+	{
+		let stored = null;
+		try { stored = localStorage.getItem(KNOTS_KEY); } catch { /* ignore */ }
+		const asked = new URLSearchParams(location.search);
+		// (?knots tries it for this visit only; the button is what is remembered.)
+		if (asked.has('knots') ? asked.get('knots') !== '0' : stored === '1') setKnots(true, true, false);
+	}
+
+	// Bare stage: tickets, titles and the playbill step out; a faint eye in the corner brings them back.
+	const uiButton = $('#btn-ui');
+	function setBare(bare) {
+		document.body.classList.toggle('is-bare', bare);
+		uiButton.setAttribute('aria-pressed', bare);
+		uiButton.title = bare ? 'Show the tickets and titles (H)' : 'Hide the tickets and titles (H)';
+		$('#btn-ui-label').textContent = bare ? 'Show' : 'Hide';
+		toast(bare ? 'Stage cleared — press H to bring everything back' : 'Tickets and titles are back');
+	}
+	uiButton.addEventListener('click', () => setBare(!document.body.classList.contains('is-bare')));
 
 	for (const s of slots) {
 		const link = s.link;
@@ -113,7 +188,7 @@ async function boot() {
 			broadcast(peers(), s.slot);
 			if (controller.phones === 1) controller.play('greet');
 			toast(`${ROLE_NAMES[s.slot]} has taken the strings`);
-			refreshHud();
+			offerTicket();
 		};
 		link.onclose = (wasOpen) => {
 			if (wasOpen) {
@@ -126,7 +201,7 @@ async function boot() {
 			s.qr.classList.add('is-empty');
 			s.qr.innerHTML = '';
 			s.state.textContent = 'Preparing a fresh code…';
-			refreshHud();
+			if (wasOpen) offerTicket(); else refreshHud();
 			link.listen();
 		};
 		link.onpacket = (buffer) => {
@@ -154,7 +229,7 @@ async function boot() {
 					}
 					break;
 				case 'act': if (typeof msg.id === 'string') controller.action(msg.id.slice(0, 16)); break;
-				case 'reset': controller.reset(); toast('Puppet reset'); break;
+				case 'reset': resetPuppet(s.slot); break;
 				case 'cal': toast(`${ROLE_NAMES[s.slot]} calibrated`); break;
 				default: break;
 			}
@@ -184,19 +259,59 @@ async function boot() {
 	const barPos = new Float32Array(RIG.bars.length * 3);
 	const barQuat = new Float32Array(RIG.bars.length * 4);
 	const tensionNorm = new Float32Array(64);
-	const snapEvery = Math.max(1, Math.round(sim.opts.hz / SNAPSHOT_HZ));
-	const maxSteps = Math.ceil(sim.opts.hz / 10);
+	// Physics takes what a 60 fps frame has to spare. Each level is [steps per second, solver
+	// sweeps, cost relative to the default]; accuracy rises with the step rate (see
+	// tools/solver-bench.mjs), so spare time buys smaller steps, and a busy frame gives them back.
+	const LEVELS = [[120, 5, 0.8], [180, 5, 0.9], [240, 5, 1], [360, 4, 1.25], [480, 4, 1.5], [720, 4, 2.15], [960, 4, 2.7]];
+	const FRAME_MS = 1000 / 60;
+	const RESERVE_MS = 4.5;        // of each frame, left for the GPU and the browser
+	const PHYSICS_MAX_MS = 9;      // never spend more than this on physics, however idle the rest is
+	let level = LEVELS.findIndex((l) => l[0] === sim.opts.hz);
+	if (level < 0) level = 2;
+	let snapEvery = 1, maxSteps = 1;
+	function setLevel(next) {
+		level = next;
+		sim.setRate(LEVELS[level][0], LEVELS[level][1]);
+		snapEvery = Math.max(1, Math.round(sim.opts.hz / SNAPSHOT_HZ));
+		maxSteps = Math.ceil(sim.opts.hz / 10);
+	}
+	setLevel(level);
+	let physEma = 0, otherEma = 3, overFor = 0, roomFor = 0, cooling = 2;
+	/** Once a frame: move to a cheaper level if physics overran its share, to a finer one if there is room. */
+	function govern(dt, physicsMs, workMs) {
+		if (dt > 0.05) return;      // a hitch or a hidden tab says nothing about the budget
+		physEma += (physicsMs - physEma) * 0.08;
+		otherEma += (workMs - physicsMs - otherEma) * 0.08;
+		if (!tuning.adaptive) return;
+		const budget = Math.min(PHYSICS_MAX_MS, Math.max(0.8, FRAME_MS - RESERVE_MS - otherEma));
+		tuning.budget = budget;
+		cooling -= dt;
+		overFor = physEma > budget ? overFor + dt : 0;
+		const next = level + 1 < LEVELS.length ? physEma * (LEVELS[level + 1][2] / LEVELS[level][2]) : Infinity;
+		roomFor = next < budget * 0.7 && cooling <= 0 ? roomFor + dt : 0;
+		if (overFor > 0.3 && level > 0) {
+			physEma *= LEVELS[level - 1][2] / LEVELS[level][2];
+			setLevel(level - 1);
+			overFor = 0; roomFor = 0; cooling = 3;
+		} else if (roomFor > 1.2) {
+			physEma = next;
+			setLevel(level + 1);
+			roomFor = 0; cooling = 1.5;
+		}
+	}
 	const chest = sim.bodyIx.chest;
 	const fpsEl = $('#fps');
 	let last = performance.now();
 	let acc = 0, steps = 0, clock = 0, frames = 0, fpsAt = last, physMs = 0;
+	// timeScale: debug mode slows time through this. adaptive: let the governor above choose the step rate.
+	const tuning = { timeScale: 1, adaptive: !new URLSearchParams(location.search).has('fixed'), budget: 0, get level() { return level; }, levels: LEVELS, setLevel: (i) => setLevel(Math.max(0, Math.min(LEVELS.length - 1, i))), govern };
 
 	function frame(now) {
 		requestAnimationFrame(frame);
 		const dt = Math.min(0.1, (now - last) / 1000);
 		last = now;
 		clock += dt;
-		acc += dt;
+		acc += dt * tuning.timeScale;
 		const t0 = performance.now();
 		let n = 0;
 		while (acc >= sim.dt && n < maxSteps) {
@@ -207,7 +322,8 @@ async function boot() {
 			if (++steps % snapEvery === 0) sendSnapshots();
 		}
 		if (n === maxSteps) acc = 0;
-		physMs += performance.now() - t0;
+		const physicsMs = performance.now() - t0;
+		physMs += physicsMs;
 
 		// Render between the last two physics states.
 		const a = acc / sim.dt;
@@ -227,27 +343,32 @@ async function boot() {
 
 		if (shownStrings !== sim.strings) {
 			shownStrings = sim.strings;
-			strings.setStrings(sim.strings.map((s) => s.def));
+			strings.setStrings(sim.strings.map((s) => s.def), sim.strings.map((s) => s.memory));
 			strings.setResolution(stage.size[0] * stage.size[2], stage.size[1] * stage.size[2]);
 		}
 		let brokenMask = 0;
 		sim.strings.forEach((s, i) => { tensionNorm[i] = sim.tension[i] / s.def.max; if (s.broken) brokenMask |= 1 << i; });
 		strings.update(ipos, iquat, sim.handlePos, tensionNorm, brokenMask, clock, sim.ctl.pull);
+		sim.setStringLoads(strings.loads(stringLoads));
+		if (strings.tangles.enabled) sim.setKnots(strings.knots());
 
 		stage.update(dt, clock, { x: ipos[chest * 3], y: ipos[chest * 3 + 1], z: ipos[chest * 3 + 2] });
 		stage.render(dt);
 		if (stage.adapt(dt * 1000)) resize();
+		govern(dt, physicsMs, performance.now() - t0);
 
 		frames++;
 		if (now - fpsAt > 1000) {
-			if (!fpsEl.hidden) fpsEl.textContent = `${Math.round((frames * 1000) / (now - fpsAt))} fps · physics ${(physMs / frames).toFixed(2)} ms · quality ${stage.quality}`;
+			if (!fpsEl.hidden) fpsEl.textContent = `${Math.round((frames * 1000) / (now - fpsAt))} fps · physics ${(physMs / frames).toFixed(2)} ms at ${sim.opts.hz} Hz × ${sim.opts.iterations} · quality ${stage.quality}`;
 			frames = 0; fpsAt = now; physMs = 0;
 		}
 	}
 
 	window.addEventListener('keydown', (e) => {
 		if (e.target instanceof HTMLInputElement) return;
-		if (e.key === 'r') controller.reset();
+		if (e.key === 'r') resetPuppet();
+		if (e.key === 'k' && !e.repeat) knotsButton.click();
+		if (e.key === 'h' && !e.repeat) uiButton.click();
 		if (e.key === 'q') { stage.setQuality((stage.quality + 2) % 3); resize(); toast(`Quality: ${['low', 'medium', 'high'][stage.quality]}`); }
 		if (e.key === 'd') fpsEl.hidden = !fpsEl.hidden;
 		if (e.key === 'f' && document.documentElement.requestFullscreen) {
@@ -256,7 +377,16 @@ async function boot() {
 	});
 
 	// Handy for the browser console and automated checks.
-	window.motionPuppet = { sim, controller, stage, slots, THREE };
+	window.motionPuppet = { sim, controller, stage, slots, puppet, strings, tuning, THREE };
+
+	// Debug mode: add ?debug (or ?debug=<routine>) to the stage URL for predefined movement
+	// routines that play the puppet without a phone. Loaded only when asked for.
+	const params = new URLSearchParams(location.search);
+	if (params.has('debug')) {
+		import('./debug.js')
+			.then((m) => m.startDebug({ ...window.motionPuppet, toast, refreshHud }, params.get('debug')))
+			.catch((err) => console.error('Debug mode failed to load', err));
+	}
 
 	stage.update(0.016, 0, { x: 0, y: 1.25, z: 0 });
 	stage.render(0.016);

@@ -42,18 +42,23 @@
 			<div class="sheet__actions" id="sheet-actions"></div>
 		</section>
 
-		<footer class="dock">
-			<div class="stick" id="stick" hidden>
-				<div class="stick__pad" id="stick-pad"><i id="stick-nub"></i></div>
-				<span id="stick-label">Stick</span>
-			</div>
-			<div class="actions" id="actions"></div>
-			<div class="tools">
-				<button type="button" id="tool-camera" aria-pressed="false" title="Move the camera instead of the puppet"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-2h6l2 2h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg><span>Camera</span></button>
-				<button type="button" id="tool-multi" aria-pressed="false" title="Select several controls"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="11" height="11" rx="2"/><rect x="9" y="9" width="11" height="11" rx="2"/></svg><span>Multi</span></button>
-				<button type="button" id="tool-level" title="Recalibrate the phone's neutral pose"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg><span>Level</span></button>
-				<button type="button" id="tool-reset" title="Reset the puppet and every control"><svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 1 0 2.2-5.1"/><path d="M4 4v5h5"/></svg><span>Reset</span></button>
-				<button type="button" id="tool-rig" hidden title="Edit the custom rig"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h12M20 17h0"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="17" r="2"/></svg><span>Rig</span></button>
+		<footer class="dock" id="dock">
+			<nav class="moves" id="moves" aria-label="Moves"></nav>
+			<div class="dock__row">
+				<div class="stick" id="stick" hidden>
+					<div class="stick__pad" id="stick-pad"><i id="stick-nub"></i></div>
+					<span id="stick-label">Stick</span>
+				</div>
+				<div class="dock__mid">
+					<div class="actions" id="actions"></div>
+					<button class="reset" type="button" id="tool-reset" title="Stand the puppet back up, re-tie its strings and let go of every control"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12a7 7 0 1 0 2.2-5.1"/><path d="M4 4v5h5"/></svg><span>Reset puppet</span></button>
+				</div>
+				<div class="tools">
+					<button type="button" id="tool-camera" aria-pressed="false" title="Move the camera instead of the puppet"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-2h6l2 2h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg><span>Camera</span></button>
+					<button type="button" id="tool-multi" aria-pressed="false" title="Select several controls"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="11" height="11" rx="2"/><rect x="9" y="9" width="11" height="11" rx="2"/></svg><span>Multi</span></button>
+					<button type="button" id="tool-level" title="Recalibrate the phone's neutral pose"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg><span>Level</span></button>
+					<button type="button" id="tool-rig" hidden title="Edit the custom rig"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h12M20 17h0"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="17" r="2"/></svg><span>Rig</span></button>
+				</div>
 			</div>
 		</footer>
 	</main>

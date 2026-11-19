@@ -3,6 +3,7 @@ import RAPIER from '../site/vendor/rapier.mjs';
 import { PuppetSim } from '../site/js/stage/sim.js';
 import { RIG } from '../site/js/shared/rig-config.js';
 import * as M from '../site/js/shared/math.js';
+import { buildMeshes, stringsInsideWood } from './lib/mesh-metric.mjs';
 
 await RAPIER.init();
 const sim = new PuppetSim(RAPIER);
@@ -24,7 +25,7 @@ function run(seconds, each) {
 	for (let i = 0; i < steps; i++) {
 		if (each) each(i * DT);
 		sim.step();
-		for (const b of sim.bodies) { const v = b.body.linvel(); maxSpeed = Math.max(maxSpeed, Math.hypot(v.x, v.y, v.z)); }
+		maxSpeed = Math.max(maxSpeed, sim.maxSpeed());
 	}
 	return maxSpeed;
 }
@@ -35,7 +36,7 @@ function drift(seconds = 1) {
 	for (let i = 0; i < before.length; i += 3) worst = Math.max(worst, Math.hypot(sim.pos[i] - before[i], sim.pos[i + 1] - before[i + 1], sim.pos[i + 2] - before[i + 2]));
 	return worst;
 }
-function speedNow() { let m = 0; for (const b of sim.bodies) { const v = b.body.linvel(); m = Math.max(m, Math.hypot(v.x, v.y, v.z)); } return m; }
+function speedNow() { return sim.maxSpeed(); }
 function check(name, ok, detail = '') { if (!ok) failures++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}  ${detail}`); }
 function report(label) {
 	const t = [...sim.tension].map((v) => v.toFixed(0)).join(' ');
@@ -78,7 +79,7 @@ const maxShake = run(12, (t) => {
 report('shaken');
 check('survives violent shaking without reset', sim.resets === 1, `resets ${sim.resets}, peak speed ${maxShake.toFixed(1)}`);
 let joined = 0;
-for (const j of sim.joints) joined = Math.max(joined, M.dist(sim.pointAt(j.a, j.anchorA), sim.pointAt(j.b, j.anchorB)));
+joined = sim.jointGap();
 check('joints stay assembled', joined < 0.08, `worst gap ${joined.toFixed(4)} m`);
 
 // 6. Recovery.
@@ -96,11 +97,91 @@ sim.ctl.ik[e].w = 0;
 
 // 8. Slack everything: collapse to the floor without exploding.
 sim.ctl.stringGain = 0; sim.ctl.balance = 0; sim.ctl.tone = { spine: 0.3, head: 0.3, arms: 0.3, legs: 0.3 };
-const maxDrop = run(5); report('dropped');
-check('collapses calmly when dropped', speedNow() < 0.3 && sim.bodyPos(ix.chest)[1] < 0.6 && sim.bodyPos(ix.chest)[1] > 0.03, `chest y ${sim.bodyPos(ix.chest)[1].toFixed(3)} peak ${maxDrop.toFixed(1)}`);
+const maxDrop = run(9); report('dropped');
+check('collapses calmly when dropped', speedNow() < 0.3 && sim.bodyPos(ix.chest)[1] < 0.6 && sim.bodyPos(ix.chest)[1] > 0.03, `chest y ${sim.bodyPos(ix.chest)[1].toFixed(3)} speed ${speedNow().toFixed(2)} peak ${maxDrop.toFixed(1)}`);
 sim.ctl.stringGain = 1; sim.ctl.tone = { spine: 1, head: 1, arms: 1, legs: 1 };
 run(6); report('re-strung');
 check('stands back up when re-strung', sim.bodyPos(ix.head)[1] > 1.4, `head y ${sim.bodyPos(ix.head)[1].toFixed(3)}`);
+
+// 9. Strings collide with the puppet. Fold it up under a low, tilting bar so strings must
+//    cross limbs, then measure — against the real rendered meshes, not a stand-in — how
+//    much string lies inside the wood with collisions off and on.
+{
+	const model = buildMeshes();
+	const scenario = (opts, drive, phase = 0) => {
+		const s2 = new PuppetSim(RAPIER, RIG, opts);
+		let cut = 0, worst = 0, where = '', samples = 0, overlap = 0, pair = '';
+		const total = Math.round(14 / s2.dt);
+		for (let i = 0; i < total; i++) {
+			drive(s2, i * s2.dt + phase);
+			s2.step();
+			if (i % 24) continue;
+			const m = stringsInsideWood(s2, model, { routed: opts.stringCollision });
+			samples++;
+			if (m.worst > 0.015) cut++;
+			if (m.worst > worst) { worst = m.worst; where = m.where; }
+			const o = s2.deepestOverlap();
+			if (o.depth > overlap) { overlap = o.depth; pair = o.pair.join(' / '); }
+		}
+		return { cut: cut / samples, worst, where, overlap, pair, resets: s2.resets - 1, joints: Math.max(...s2.joints.map((j) => M.dist(s2.pointAt(j.a, j.anchorA), s2.pointAt(j.b, j.anchorB)))) };
+	};
+	// The motion is chaotic, so one run says little: the same performance is started at three
+	// different moments and the figures are the average share and the worst case of the three.
+	const several = (opts, drive) => {
+		const runs = [0, 2.9, 5.7].map((phase) => scenario(opts, drive, phase));
+		const deepest = runs.reduce((a, b) => (b.worst > a.worst ? b : a));
+		const overlapping = runs.reduce((a, b) => (b.overlap > a.overlap ? b : a));
+		return {
+			cut: runs.reduce((sum, r) => sum + r.cut, 0) / runs.length, worst: deepest.worst, where: deepest.where,
+			overlap: overlapping.overlap, pair: overlapping.pair, resets: Math.max(...runs.map((r) => r.resets)), joints: Math.max(...runs.map((r) => r.joints)),
+		};
+	};
+	const fold = (s2, t) => {
+		const q = M.qFromYPR(Math.sin(t * 0.9) * 1.6, 0.75 * Math.sin(t * 1.3), 0.7 * Math.sin(t * 1.1 + 1));
+		RIG.bars.forEach((b, k) => { s2.ctl.bars[k].pos = M.add(M.add(RIG.home, [0.25 * Math.sin(t * 0.7), -0.45 + 0.25 * Math.sin(t * 1.7), 0.2 * Math.cos(t * 0.8)]), M.qRot(q, b.offset)); s2.ctl.bars[k].quat = q; });
+		s2.ctl.pull[4] = 0.4 + 0.3 * Math.sin(t * 2.1); s2.ctl.pull[7] = 0.35 + 0.3 * Math.sin(t * 1.6);
+	};
+	const perform = (s2, t) => {
+		const q = M.qFromYPR(Math.sin(t * 1.1) * 0.9, Math.sin(t * 1.7) * 0.7, Math.cos(t * 1.3) * 0.7);
+		RIG.bars.forEach((b, k) => { s2.ctl.bars[k].pos = M.add(RIG.home, M.qRot(q, b.offset)); s2.ctl.bars[k].quat = q; });
+		s2.ctl.pull[4] = 0.3 + 0.3 * Math.sin(t * 2); s2.ctl.pull[5] = 0.3 + 0.3 * Math.cos(t * 1.6); s2.ctl.pull[6] = 0.2 + 0.2 * Math.sin(t * 2.4);
+	};
+	const pct = (v) => `${(v * 100).toFixed(1)}%`, mm = (v) => `${(v * 1000).toFixed(0)} mm`;
+	for (const [name, drive, limit] of [['performing (tilt, roll, pulls)', perform, 0.03], ['folded up under a low bar', fold, 0.1]]) {
+		const off = scenario({ stringCollision: false }, drive);
+		const on = several({ stringCollision: true }, drive);
+		console.log(`  [${name}] string inside the wood for more than 15 mm: ${pct(off.cut)} of the time without collisions (worst ${mm(off.worst)}), ${pct(on.cut)} with (worst ${mm(on.worst)}${on.where ? ', ' + on.where : ''})`);
+		check(`${name}: strings stay out of the wood`, on.cut <= limit && on.cut < off.cut * 0.3, `${pct(on.cut)} vs ${pct(off.cut)} without collisions`);
+		check(`${name}: limbs do not pass through each other`, on.overlap < 0.03, `deepest overlap ${mm(on.overlap)}${on.pair ? ' (' + on.pair + ')' : ''}`);
+		check(`${name}: stays stable`, on.resets === 0 && on.joints < 0.05, `resets ${on.resets}, worst joint gap ${mm(on.joints)}`);
+	}
+}
+
+// 10. The stage changes the step rate while running to fit its frame budget: the puppet
+//     must not notice. Stand, perform and hang through a run of rate changes.
+{
+	const s3 = new PuppetSim(RAPIER);
+	const rates = [[240, 5], [480, 4], [120, 5], [720, 4], [180, 5], [960, 4], [360, 4], [240, 5]];
+	let gap = 0, t = 0;
+	for (let i = 0; i < 240 * 4; i++) s3.step();
+	const before = s3.bodyPos(s3.bodyIx.head);
+	for (const [hz, sweeps] of rates) { s3.setRate(hz, sweeps); for (let i = 0; i < hz * 0.75; i++) { s3.step(); gap = Math.max(gap, s3.jointGap()); } }
+	const moved = M.dist(before, s3.bodyPos(s3.bodyIx.head));
+	check('changing the step rate leaves a standing puppet standing', moved < 0.004 && s3.maxSpeed() < 0.05 && s3.resets === 1, `head moved ${(moved * 1000).toFixed(2)} mm, speed ${(s3.maxSpeed() * 1000).toFixed(1)} mm/s, joint gap ${(gap * 1000).toFixed(2)} mm`);
+	gap = 0;
+	for (let round = 0; round < 3; round++) {
+		for (const [hz, sweeps] of rates) {
+			s3.setRate(hz, sweeps);
+			for (let i = 0; i < hz * 0.4; i++) {
+				t += s3.dt;
+				const q = M.qFromYPR(Math.sin(t * 1.1) * 0.9, Math.sin(t * 1.7) * 0.7, Math.cos(t * 1.3) * 0.7);
+				RIG.bars.forEach((b, k) => { s3.ctl.bars[k].pos = M.add(home, M.qRot(q, b.offset)); s3.ctl.bars[k].quat = q; });
+				s3.step(); gap = Math.max(gap, s3.jointGap());
+			}
+		}
+	}
+	check('changing the step rate mid-performance keeps the puppet together', gap < 0.03 && s3.resets === 1, `worst joint gap ${(gap * 1000).toFixed(1)} mm, resets ${s3.resets - 1}`);
+}
 
 // Timing.
 const t0 = performance.now(); run(5); const ms = (performance.now() - t0) / (5 / DT);

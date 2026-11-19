@@ -95,10 +95,11 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .lift span { flex: none; width: 46px; font-size: 0.66rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold); }
 .lift input { flex: 1; height: 30px; accent-color: var(--gold); touch-action: none; }
 
+/* --dock-h is the dock's measured height (set from main.js), so the sheet always clears it. */
 .sheet {
 	position: absolute;
 	left: 8px; right: 8px;
-	bottom: calc(var(--safe-b) + 116px);
+	bottom: calc(var(--dock-h, calc(var(--safe-b) + 172px)) - 6px);
 	padding: 10px 12px;
 	border-radius: 16px;
 	background: var(--panel);
@@ -120,21 +121,78 @@ button { font: inherit; color: inherit; cursor: pointer; }
 	position: absolute;
 	left: 0; right: 0; bottom: 0;
 	display: flex;
-	align-items: flex-end;
+	flex-direction: column;
 	gap: 8px;
 	padding: 10px 8px calc(var(--safe-b) + 8px);
 	background: linear-gradient(0deg, rgba(9, 5, 5, 0.95) 40%, rgba(9, 5, 5, 0));
 	pointer-events: none;
 }
-.dock > * { pointer-events: auto; }
+.dock__row { display: flex; align-items: flex-end; gap: 8px; }
+.dock__row > *, .moves { pointer-events: auto; }
+.dock__row > .dock__mid { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 6px; pointer-events: none; }
+.dock__mid > * { pointer-events: auto; }
+
+/* One-tap moves: a strip to flick through sideways, so the list can grow without eating the board. */
+.moves {
+	display: grid;
+	grid-auto-flow: column;
+	grid-auto-columns: max-content;
+	gap: 6px;
+	margin: 0 -8px;
+	padding: 2px 8px;
+	overflow-x: auto;
+	scrollbar-width: none;
+	touch-action: pan-x;
+	-webkit-overflow-scrolling: touch;
+	-webkit-mask-image: linear-gradient(90deg, transparent, #000 12px, #000 calc(100% - 34px), transparent);
+	mask-image: linear-gradient(90deg, transparent, #000 12px, #000 calc(100% - 34px), transparent);
+}
+.moves::-webkit-scrollbar { display: none; }
+.moves button {
+	flex: none;
+	border: 1px solid var(--line);
+	background: var(--panel);
+	border-radius: 999px;
+	padding: 11px 15px;
+	font-size: 0.84rem;
+	font-weight: 700;
+	white-space: nowrap;
+	backdrop-filter: blur(8px);
+	transition: background 0.5s, color 0.5s;
+}
+.moves button:active, .moves button.is-playing { background: var(--gold); color: #2a1708; transition: none; }
+/* A tall phone has room for two rows, which halves the flicking. */
+@media (orientation: portrait) and (min-height: 740px) {
+	.moves { grid-template-rows: repeat(2, auto); }
+	.moves button { padding: 9px 14px; }
+}
 
 .stick { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 .stick__pad { width: 92px; height: 92px; border-radius: 50%; background: radial-gradient(circle, rgba(226, 180, 87, 0.16), rgba(226, 180, 87, 0.04)); border: 1px solid var(--line); position: relative; touch-action: none; }
 .stick__pad i { position: absolute; left: 50%; top: 50%; width: 40px; height: 40px; margin: -20px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #f6d58c, #b9882f); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6); }
 
-.actions { flex: 1; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; align-self: center; }
-.actions button { border: 1px solid var(--line); background: var(--panel); border-radius: 12px; padding: 12px 14px; font-size: 0.84rem; font-weight: 700; min-width: 64px; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.actions:empty { display: none; }
+.actions button { flex: 1; border: 1px solid var(--line); background: var(--panel); border-radius: 12px; padding: 12px 10px; font-size: 0.84rem; font-weight: 700; min-width: 60px; }
 .actions button:active { background: var(--gold); color: #2a1708; }
+
+/* The way out of any tangle, on every phone. */
+.reset {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	padding: 12px 10px;
+	border-radius: 12px;
+	border: 1px solid rgba(239, 106, 85, 0.55);
+	background: linear-gradient(180deg, rgba(125, 17, 28, 0.78), rgba(74, 10, 18, 0.82));
+	color: #ffe3da;
+	font-size: 0.84rem;
+	font-weight: 700;
+	white-space: nowrap;
+}
+.reset svg { flex: none; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.reset:active { background: var(--red); color: #2a0b06; }
 
 .tools { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; }
 .tools button { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 54px; padding: 7px 2px 5px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); font-size: 0.6rem; letter-spacing: 0.04em; color: var(--muted); }
@@ -241,7 +299,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 	position: fixed;
 	z-index: 30;
 	left: 50%;
-	bottom: calc(var(--safe-b) + 150px);
+	bottom: calc(var(--dock-h, calc(var(--safe-b) + 172px)) + 28px);
 	transform: translate(-50%, 16px);
 	max-width: 86vw;
 	padding: 9px 16px;
@@ -259,9 +317,15 @@ button { font: inherit; color: inherit; cursor: pointer; }
 @media (orientation: landscape) and (max-height: 500px) {
 	.blurb { display: none; }
 	.sheet { left: auto; right: 70px; width: 300px; bottom: calc(var(--safe-b) + 8px); }
+	/* A wide, short screen: the moves share the dock's one row instead of stacking on top of it. */
+	.dock { flex-direction: row; align-items: flex-end; }
+	.dock__row { display: contents; }
+	.moves { order: 1; flex: 1; min-width: 0; margin: 0; }
+	.dock__row > .dock__mid { order: 2; flex: none; }
+	.tools { order: 3; }
 }
 
 @media (prefers-reduced-motion: reduce) {
 	.link i { animation: none; }
-	.toast, .blurb { transition: none; }
+	.toast, .blurb, .moves button { transition: none; }
 }

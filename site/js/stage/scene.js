@@ -107,6 +107,31 @@ function drape(width, height, pleats, gather, material) {
 	return mesh;
 }
 
+/**
+ * Ambient occlusion that leaves see-through effect meshes out. GTAOPass draws
+ * its own depth and normal buffers with an override material, and that material
+ * turns every mesh into a solid surface: the follow spot's beam cone, which is
+ * additive and writes no depth in the colour pass, became an opaque wall there.
+ * The floor then picked up a hard dark crease along the arc where the cone
+ * meets it and along the cone's straight silhouette, and the puppet standing
+ * inside the cone got no occlusion at all. Anything that keeps out of the
+ * depth buffer in the colour pass is kept out of this one too.
+ */
+class StageAOPass extends GTAOPass {
+	render(renderer, writeBuffer, readBuffer, deltaTime, maskActive) {
+		const hidden = _seeThrough;
+		this.scene.traverseVisible((o) => { if (o.isMesh && o.material.depthWrite === false) hidden.push(o); });
+		for (const o of hidden) o.visible = false;
+		try {
+			super.render(renderer, writeBuffer, readBuffer, deltaTime, maskActive);
+		} finally {
+			for (const o of hidden) o.visible = true;
+			hidden.length = 0;
+		}
+	}
+}
+const _seeThrough = [];
+
 export class Stage {
 	constructor(canvas) {
 		const renderer = (this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' }));
@@ -265,7 +290,7 @@ export class Stage {
 		const composer = (this.composer = new EffectComposer(r, target));
 		composer.addPass(new RenderPass(this.scene, this.camera));
 		try {
-			this.ao = new GTAOPass(this.scene, this.camera, w, h);
+			this.ao = new StageAOPass(this.scene, this.camera, w, h);
 			this.ao.updateGtaoMaterial({ radius: 0.32, distanceExponent: 1.4, thickness: 1.2, scale: 1.15, samples: 12 });
 			this.ao.blendIntensity = 0.95;
 			composer.addPass(this.ao);

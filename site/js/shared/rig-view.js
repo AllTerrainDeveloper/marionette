@@ -6,9 +6,12 @@ import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { BODIES, BARS, HANDLES, RIG_HOME } from './rig-config.js';
+import { BODIES, BARS, HANDLES, RIG_HOME, STRING_WEIGHT } from './rig-config.js';
+import { buildWrapProxies, effectiveAttach, stringExclusions, wrapFrame, stringPath } from './string-path.js';
+import { StringShape } from './string-shape.js';
+import { Tangles, withKnots } from './string-tangle.js';
 
-const SEGMENTS = 14;
+const SEGMENTS = 44;             // straight pieces a string is drawn with
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
 const _q = new THREE.Quaternion();
@@ -37,7 +40,7 @@ export class RigView {
 			const beam = (w, d, x, z) => {
 				const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, 0.02, d), wood);
 				mesh.position.set(x, 0, z);
-				mesh.castShadow = !opts.ghost;
+				mesh.castShadow = false;   // the control bars hang above the lights: no shadows on the stage
 				g.add(mesh);
 			};
 			if (z1 - z0 > 0.08) beam(0.036, z1 - z0, 0, (z0 + z1) / 2);
@@ -67,7 +70,7 @@ export class RigView {
 					? new THREE.MeshStandardMaterial({ color: 0xffd58a, emissive: 0x6b4a12, roughness: 0.35 })
 					: opts.materials.brass
 			);
-			knob.castShadow = !opts.ghost;
+			knob.castShadow = false;
 			this.group.add(knob);
 			this.knobs.push(knob);
 			// A short wire from the bar to a knob that has been pulled away from it.
@@ -104,15 +107,15 @@ export class RigView {
 }
 
 /** Rest length of a string, computed exactly as the simulation does. */
-export function stringRestLength(def) {
+export function stringRestLength(def, at = def.at) {
 	if (Number.isFinite(def.length)) return def.length;
 	const h = HANDLES.find((x) => x.id === def.handle);
 	const body = BODIES.find((x) => x.id === def.body);
 	const bar = BARS.find((x) => x.id === h.bar);
 	return Math.hypot(
-		RIG_HOME[0] + bar.offset[0] + h.local[0] - body.pos[0] - def.at[0],
-		RIG_HOME[1] + bar.offset[1] + h.local[1] - body.pos[1] - def.at[1],
-		RIG_HOME[2] + bar.offset[2] + h.local[2] - body.pos[2] - def.at[2]
+		RIG_HOME[0] + bar.offset[0] + h.local[0] - body.pos[0] - at[0],
+		RIG_HOME[1] + bar.offset[1] + h.local[1] - body.pos[1] - at[1],
+		RIG_HOME[2] + bar.offset[2] + h.local[2] - body.pos[2] - at[2]
 	) + (def.slack || 0);
 }
 
@@ -125,6 +128,9 @@ export class StringsView {
 		this.group = new THREE.Group();
 		this.items = [];
 		this.resolution = new THREE.Vector2(1024, 768);
+		this.proxies = buildWrapProxies(BODIES);
+		this.tangles = new Tangles();   // strings catching on each other: off unless `tangles.enabled` is set
+		this.frame = [];
 	}
 
 	setResolution(w, h) {
@@ -133,7 +139,20 @@ export class StringsView {
 	}
 
 	/** Rebuilds lines and screw eyes for a new string table. */
-	setStrings(defs) {
+	/**
+	 * @param memories optional: one router memory per string, shared with whoever else routes
+	 *                 these strings (the simulation), so that both go round the same limbs and
+	 *                 the physics learns from the drawn string what it is caught on
+	 */
+	/** What the strings weigh on, all of them together: [{ body, at: [x, y, z], weight }] (see StringShape.loads). */
+	loads(out = []) {
+		out.length = 0;
+		for (const item of this.items) if (item.loads && item.line.visible) for (const load of item.loads) out.push(load);
+		return out;
+	}
+
+	setStrings(defs, memories = null) {
+		this.memories = memories;
 		for (const item of this.items) {
 			this.group.remove(item.line);
 			item.line.geometry.dispose();
@@ -145,6 +164,8 @@ export class StringsView {
 			const body = BODIES.findIndex((b) => b.id === def.body);
 			const handle = HANDLES.findIndex((h) => h.id === def.handle);
 			if (body < 0 || handle < 0) continue;
+			// Where the string is tied: on the surface of the wood, exactly as in the simulation.
+			const tie = effectiveAttach(def, BODIES, this.proxies);
 			const geometry = new LineGeometry();
 			geometry.setPositions(new Float32Array((SEGMENTS + 1) * 3));
 			const material = new LineMaterial({
@@ -157,11 +178,12 @@ export class StringsView {
 			let eye = null;
 			if (this.opts.eyeMaterial && this.opts.parts) {
 				eye = new THREE.Mesh(new THREE.TorusGeometry(0.011, 0.003, 6, 12), this.opts.eyeMaterial);
-				eye.position.set(def.at[0], def.at[1], def.at[2]);
+				eye.position.set(tie[0], tie[1], tie[2]);
+				eye.name = 'screw-eye';
 				eye.rotation.y = Math.PI / 2;
 				this.opts.parts[body].add(eye);
 			}
-			this.items.push({ def, body, handle, line, eye, rest: stringRestLength(def), attach: new THREE.Vector3(), top: new THREE.Vector3(), highlight: 0 });
+			this.items.push({ def, body, handle, line, eye, tie, rest: stringRestLength(def, tie), excluded: stringExclusions(def, tie, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null, memory: (this.memories && this.memories[this.items.length]) || {}, shape: new StringShape(SEGMENTS) });
 		}
 	}
 
@@ -169,45 +191,43 @@ export class StringsView {
 	 * pos / quat: body transforms, handlePos: handle positions,
 	 * tension: 0..1 per string (fraction of its maximum), brokenMask: bit per string,
 	 * pulls: optional metres of pull per string, selected: optional Set of indices.
+	 *
+	 * A tight string is drawn along its route round the limbs; one with spare length
+	 * hangs free from its two ends (string-shape.js works out which, and the shape).
 	 */
 	update(pos, quat, handlePos, tension, brokenMask, time, pulls, selected) {
+		// Route every string on the very transforms being drawn, so it lies on the surface
+		// that is on screen. (`wrap = false` draws plain straight strings — debug mode uses it to compare.)
+		const frame = this.wrap === false ? NO_PIECES : wrapFrame(this.proxies, pos, quat, this.frame);
+		const dt = Math.min(1 / 20, Math.max(0, time - (this.lastTime ?? time)));
+		this.lastTime = time;
 		this.items.forEach((item, i) => {
 			const { def, body, handle, line } = item;
 			const broken = !!(brokenMask & (1 << i));
 			line.visible = def.enabled !== false;
-			if (!line.visible) return;
+			if (!line.visible) { item.shape.live = false; return; }
 			_q.set(quat[body * 4], quat[body * 4 + 1], quat[body * 4 + 2], quat[body * 4 + 3]);
-			_a.set(def.at[0], def.at[1], def.at[2]).applyQuaternion(_q);
+			_a.set(item.tie[0], item.tie[1], item.tie[2]).applyQuaternion(_q);
 			_a.set(_a.x + pos[body * 3], _a.y + pos[body * 3 + 1], _a.z + pos[body * 3 + 2]);
 			_b.set(handlePos[handle * 3], handlePos[handle * 3 + 1], handlePos[handle * 3 + 2]);
 			item.attach.copy(_a); item.top.copy(_b);
 
-			const d = _a.distanceTo(_b);
+			let pts = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], frame, item.excluded, undefined, item.memory).points;
+			// A string another string holds goes through the place where it is held.
+			if (this.tangles.enabled && !broken) pts = withKnots(pts, this.tangles.knots[i]);
+			item.broken = broken;
+			item.points = pts;
 			const rest = Math.max(0.05, item.rest - (pulls ? pulls[i] || 0 : 0));
 			const t = tension[i] || 0;
-			// Slack string: hang in a shallow arc (parabola approximating a catenary) and sway a little.
-			let sag = 0;
-			if (broken) sag = 0.35;
-			else if (d < rest && t < 0.004) sag = Math.sqrt(Math.max(0, (3 * d * (rest - d)) / 8));
-			const sway = sag * 0.18;
+			const shape = item.shape.update(pts, rest, broken, frame, item.excluded, dt, item.memory, body);
+			item.shape.loads(STRING_WEIGHT, body, broken, item.loads || (item.loads = []));
+
 			const data = line.geometry.attributes.instanceStart.data;
 			const arr = data.array;
-			let px = 0, py = 0, pz = 0;
-			for (let k = 0; k <= SEGMENTS; k++) {
-				const u = k / SEGMENTS;
-				const bell = 4 * u * (1 - u);
-				let x = _b.x + (_a.x - _b.x) * u;
-				let y = _b.y + (_a.y - _b.y) * u - sag * bell;
-				let z = _b.z + (_a.z - _b.z) * u;
-				if (broken) { x = _b.x + Math.sin(time * 2 + i) * 0.02 * u; z = _b.z; y = _b.y - Math.min(rest, 0.7) * u; }
-				x += Math.sin(time * 1.7 + i * 2.1 + u * 3) * sway * bell;
-				z += Math.cos(time * 1.3 + i * 1.3 + u * 2) * sway * bell;
-				if (k > 0) {
-					const o = (k - 1) * 6;
-					arr[o] = px; arr[o + 1] = py; arr[o + 2] = pz;
-					arr[o + 3] = x; arr[o + 4] = y; arr[o + 5] = z;
-				}
-				px = x; py = y; pz = z;
+			for (let k = 0; k < SEGMENTS; k++) {
+				const o = k * 6, r = k * 3;
+				arr[o] = shape[r]; arr[o + 1] = shape[r + 1]; arr[o + 2] = shape[r + 2];
+				arr[o + 3] = shape[r + 3]; arr[o + 4] = shape[r + 4]; arr[o + 5] = shape[r + 5];
 			}
 			data.needsUpdate = true;
 
@@ -226,6 +246,27 @@ export class StringsView {
 				mat.opacity = broken ? 0.4 : 0.9;
 			}
 		});
+		// Strings catching on each other, if that is switched on: the chains are kept from passing
+		// through one another, and the crossings that hold are noted for the next routing.
+		if (this.tangles.enabled) {
+			const input = this._tangled || (this._tangled = []);
+			input.length = this.items.length;
+			this.items.forEach((item, i) => {
+				const entry = input[i] || (input[i] = {});
+				entry.shape = item.shape; entry.active = item.line.visible && !item.broken; entry.tension = (tension[i] || 0) * (item.def.max || 0);
+			});
+			this.tangles.update(input);
+		} else if (this.tangles.prev.length || this.tangles.knots.length) this.tangles.clear();
 	}
+
+	/** Lays every string out afresh on its route and forgets what was tangled with what (a reset). */
+	relay() {
+		for (const item of this.items) item.shape.live = false;
+		this.tangles.clear();
+	}
+
+	/** Where strings hold each other, per string (for PuppetSim.setKnots); null with tangling off. */
+	knots() { return this.tangles.enabled ? this.tangles.knots : null; }
 }
 const _white = new THREE.Color(1, 1, 1);
+const NO_PIECES = [];

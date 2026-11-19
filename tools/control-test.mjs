@@ -70,13 +70,27 @@ run(3, () => { send(0, {}); send(1, { quat: M.qFromYPR(0, 0, 0.6) }); });
 const mainRoll = M.qToYPR(sim.bars[0].quat)[2], limbRoll = M.qToYPR(sim.bars[1].quat)[2];
 check('second phone drives the limb bar independently', Math.abs(mainRoll) < 0.05 && Math.abs(limbRoll - 0.6) < 0.08, `main ${mainRoll.toFixed(2)} limb ${limbRoll.toFixed(2)}`);
 const kneeL = sim.bodyPos(ix.shinL)[1], kneeR = sim.bodyPos(ix.shinR)[1];
-check('rolling the limb bar lifts one leg', Math.abs(sim.bodyPos(ix.footL)[1] - sim.bodyPos(ix.footR)[1]) > 0.03, `shin heights ${kneeL.toFixed(3)} / ${kneeR.toFixed(3)}`);
+check('rolling the limb bar lifts one leg', Math.abs(kneeL - kneeR) > 0.03, `shin heights ${kneeL.toFixed(3)} / ${kneeR.toFixed(3)}`);
 
 // Arms mode with two phones: each phone is a hand.
 ctl.setMode('arms');
 run(3, () => { send(0, { quat: M.qFromYPR(0, -0.6, 0) }); send(1, {}); });
 const hl = sim.bodyPos(ix.handL)[1], hr = sim.bodyPos(ix.handR)[1];
 check('each phone raises its own hand', hl - hr > 0.25, `left ${hl.toFixed(2)} right ${hr.toFixed(2)}`);
+
+// Self-collision: drive each hand hard at the far side of the body, swapping over and over,
+// so the arms have to go around each other and the torso rather than through.
+{
+	ctl.setMode('arms');
+	let worst = 0, pair = null, samples = 0, deep = 0;
+	run(10, (t) => {
+		const swing = Math.sin(t * 2.2);
+		send(0, { ik: new Map([[sim.effIx.handL, [-0.5 - 0.1 * swing, 0.3 + 0.25 * Math.sin(t * 3.1), 0.05]], [sim.effIx.handR, [0.5 + 0.1 * swing, 0.3 + 0.25 * Math.cos(t * 2.7), 0.05]]]) });
+		send(1, {});
+		if (Math.round(t / DT) % 6 === 0) { const o = sim.deepestOverlap(); samples++; if (o.depth > 0.012) deep++; if (o.depth > worst) { worst = o.depth; pair = o.pair; } }
+	});
+	check('limbs do not pass through each other or the body', worst < 0.03 && deep / samples < 0.02, `deepest overlap ${(worst * 1000).toFixed(1)} mm (${pair ? pair.join(' / ') : 'none'}), over 12 mm in ${((deep / samples) * 100).toFixed(1)}% of samples`);
+}
 
 // Locks.
 ctl.setMode('classic'); ctl.setLocks([sim.jointIx.elbowL]);

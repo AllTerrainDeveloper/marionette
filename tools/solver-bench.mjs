@@ -1,59 +1,56 @@
-// A/B benchmark of solver settings: node tools/solver-bench.mjs
-// Compares the original single-pass string impulse at 120 Hz x 10 iterations with the
-// accumulated, warm-started string solve and smaller steps.
+// Compares solver settings on the same hard scenario: node tools/solver-bench.mjs
+// A folded-up puppet under a low, tilting bar with two strings being pulled — joints,
+// limits, contacts and strings all fight. Reports how well each setting holds them.
 import RAPIER from '../site/vendor/rapier.mjs';
 import { PuppetSim } from '../site/js/stage/sim.js';
 import { RIG } from '../site/js/shared/rig-config.js';
 import * as M from '../site/js/shared/math.js';
 
 await RAPIER.init();
+
 const variants = [
-	['120 Hz x10, single pass (before)', { hz: 120, iterations: 10, stringPasses: 1, warmStart: 0 }],
-	['120 Hz x10, accumulated x4 + warm start', { hz: 120, iterations: 10, stringPasses: 4, warmStart: 0.9 }],
-	['240 Hz x5, single pass', { hz: 240, iterations: 5, stringPasses: 1, warmStart: 0 }],
-	['240 Hz x5, accumulated x4 + warm start', { hz: 240, iterations: 5, stringPasses: 4, warmStart: 0.9 }],
-	['240 Hz x4, accumulated x3 + warm start', { hz: 240, iterations: 4, stringPasses: 3, warmStart: 0.9 }],
-	['480 Hz x2, accumulated x2 + warm start', { hz: 480, iterations: 2, stringPasses: 2, warmStart: 0.9 }],
+	['120 Hz x 6', { hz: 120, iterations: 6 }],
+	['120 Hz x 10', { hz: 120, iterations: 10 }],
+	['180 Hz x 5', { hz: 180, iterations: 5 }],
+	['240 Hz x 4', { hz: 240, iterations: 4 }],
+	['240 Hz x 5 (default)', {}],
+	['240 Hz x 8', { iterations: 8 }],
+	['360 Hz x 4', { hz: 360, iterations: 4 }],
+	['360 Hz x 5', { hz: 360, iterations: 5 }],
+	['480 Hz x 4', { hz: 480, iterations: 4 }],
+	['480 Hz x 5', { hz: 480, iterations: 5 }],
+	['720 Hz x 4', { hz: 720, iterations: 4 }],
+	['960 Hz x 4', { hz: 960, iterations: 4 }],
 ];
-const rows = [];
-for (const [name, opts] of variants) {
-	const sim = new PuppetSim(RAPIER, RIG, opts);
-	const dt = sim.dt;
-	const setBars = (pos, quat = [0, 0, 0, 1]) => RIG.bars.forEach((b, i) => { sim.ctl.bars[i].pos = M.add(pos, M.qRot(quat, b.offset)); sim.ctl.bars[i].quat = quat; });
-	const gap = () => { let g = 0; for (const j of sim.joints) g = Math.max(g, M.dist(sim.pointAt(j.a, j.anchorA), sim.pointAt(j.b, j.anchorB))); return g; };
-	const stretchErr = () => { // how far loaded strings are stretched beyond what their own spring would allow
-		let worst = 0;
-		sim.strings.forEach((s, i) => {
-			const d = M.dist(sim.handleAt(s.handle), sim.pointAt(s.body, s.def.at));
-			const over = d - s.rest;
-			if (over > 0 && sim.tension[i] < s.def.max * 0.95) worst = Math.max(worst, over - sim.tension[i] / s.def.k);
-		});
-		return worst;
-	};
-	// 1. Static accuracy: hang freely; ideal support = weight, ideal jitter = 0.
-	setBars(M.add(RIG.home, [0, 0.45, 0]));
-	for (let i = 0; i < 10 / dt; i++) sim.step();
-	let jitter = 0, load = 0, n = 0; const ref = sim.bodyPos(sim.bodyIx.chest)[1];
-	let lo = Infinity, hi = -Infinity;
-	for (let i = 0; i < 2 / dt; i++) { sim.step(); const y = sim.bodyPos(sim.bodyIx.chest)[1]; lo = Math.min(lo, y); hi = Math.max(hi, y); load += [...sim.tension].reduce((a, b) => a + b, 0); n++; }
-	jitter = hi - lo;
-	const loadErr = Math.abs(load / n - sim.totalMass * RIG.gravity) / (sim.totalMass * RIG.gravity);
-	// 2. Dynamic accuracy under violent shaking.
-	let worstGap = 0, worstStretch = 0, sumGap = 0, m = 0;
-	const t0 = performance.now();
-	const steps = Math.round(12 / dt);
-	for (let i = 0; i < steps; i++) {
-		const t = i * dt;
-		setBars(M.add(RIG.home, [Math.sin(t * 19) * 0.9, 0.3 + Math.sin(t * 27) * 0.5, Math.cos(t * 23) * 0.7]), M.qFromYPR(Math.sin(t * 9) * 2, Math.sin(t * 17) * 1.1, Math.cos(t * 13) * 1.1));
-		sim.step();
-		const g = gap(); worstGap = Math.max(worstGap, g); sumGap += g; m++;
-		worstStretch = Math.max(worstStretch, stretchErr());
-	}
-	const ms = (performance.now() - t0) / 12 / 60; // per 60 Hz frame, incl. metric overhead
-	// 3. Pure cost per rendered frame.
-	const t1 = performance.now();
-	for (let i = 0; i < 6 / dt; i++) sim.step();
-	const cost = (performance.now() - t1) / 6 / 60;
-	rows.push({ name, 'hang jitter (mm)': (jitter * 1000).toFixed(3), 'load error (%)': (loadErr * 100).toFixed(2), 'worst joint gap (mm)': (worstGap * 1000).toFixed(2), 'mean joint gap (mm)': ((sumGap / m) * 1000).toFixed(3), 'string overshoot (mm)': (worstStretch * 1000).toFixed(1), 'ms / 60Hz frame': cost.toFixed(3), resets: sim.resets - 1 });
+
+function drive(sim, t) {
+	const q = M.qFromYPR(Math.sin(t * 0.9) * 1.6, 0.75 * Math.sin(t * 1.3), 0.7 * Math.sin(t * 1.1 + 1));
+	RIG.bars.forEach((b, k) => {
+		sim.ctl.bars[k].pos = M.add(M.add(RIG.home, [0.25 * Math.sin(t * 0.7), -0.45 + 0.25 * Math.sin(t * 1.7), 0.2 * Math.cos(t * 0.8)]), M.qRot(q, b.offset));
+		sim.ctl.bars[k].quat = q;
+	});
+	sim.ctl.pull[4] = 0.4 + 0.3 * Math.sin(t * 2.1);
+	sim.ctl.pull[7] = 0.35 + 0.3 * Math.sin(t * 1.6);
 }
-console.table(rows);
+
+const mm = (v) => `${(v * 1000).toFixed(1)} mm`;
+for (const [label, opts] of variants) {
+	const sim = new PuppetSim(RAPIER, RIG, opts);
+	const hz = sim.opts.hz;
+	// Standing still first: how calm is it?
+	for (let i = 0; i < hz * 5; i++) sim.step();
+	let rest = 0;
+	for (let i = 0; i < hz * 2; i++) { sim.step(); rest = Math.max(rest, sim.maxSpeed()); }
+	let gap = 0, overlap = 0, limit = 0;
+	const steps = hz * 14;
+	const t0 = performance.now();
+	for (let i = 0; i < steps; i++) {
+		drive(sim, i * sim.dt);
+		sim.step();
+		gap = Math.max(gap, sim.jointGap());
+		for (const j of sim.joints) for (let n = 0; n < j.force.n; n++) limit = Math.max(limit, j.force.th[n] - j.force.hi[n], j.force.lo[n] - j.force.th[n]);
+		if (i % Math.round(hz / 30) === 0) overlap = Math.max(overlap, sim.deepestOverlap().depth);
+	}
+	const ms = (performance.now() - t0) / steps;
+	console.log(`${label.padEnd(30)} at rest ${(rest * 1000).toFixed(0).padStart(4)} mm/s | joint gap ${mm(gap).padStart(8)} | past a limit ${(limit * 57.3).toFixed(1).padStart(5)} deg | limb overlap ${mm(overlap).padStart(8)} | resets ${sim.resets - 1} | ${(ms * hz / 60).toFixed(2)} ms per 60 Hz frame`);
+}

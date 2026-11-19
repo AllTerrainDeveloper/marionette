@@ -10,52 +10,13 @@ import * as M from '../shared/math.js';
 import { RIG } from '../shared/rig-config.js';
 import { modeById, modeIndex, defaultCustomRig, sanitizeCustomRig, stringsForMode } from '../shared/modes.js';
 import { Mapper } from '../shared/mapping.js';
+import { GESTURES } from '../shared/gestures.js';   // scripted flourishes: additions to mapping targets over time
 
 const KICK_GAIN = 2.5;      // phone acceleration -> bar acceleration
 const KICK_SPRING = 60;
 const KICK_DAMPING = 11;
 const WALK_SPEED = 0.85;    // m/s at full stick
 const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
-
-/** Scripted flourishes, expressed as additions to mapping targets over time. */
-const GESTURES = {
-	bow: { dur: 2.4, run: (add, u, env) => { add('main.pitch', 0.62 * env); add('main.y', -0.07 * env); } },
-	wave: {
-		dur: 2.8,
-		run: (add, u, env, t, ik) => {
-			if (ik) {
-				add('ik.handL.y', 0.55 * env); add('ik.handL.x', (0.1 + 0.1 * Math.sin(t * 11)) * env);
-			} else {
-				add('handle.wristL.y', 0.52 * env);
-				add('handle.wristL.x', 0.13 * Math.sin(t * 11) * env);
-			}
-		},
-	},
-	clap: {
-		dur: 1.8,
-		run: (add, u, env) => {
-			const beat = Math.abs(Math.sin(u * Math.PI * 4));
-			add('ik.handL.x', -0.2 * beat * env); add('ik.handR.x', 0.2 * beat * env);
-			add('ik.handL.y', 0.12 * env); add('ik.handR.y', 0.12 * env);
-			add('ik.handL.z', 0.08 * env); add('ik.handR.z', 0.08 * env);
-		},
-	},
-	jig: {
-		dur: 3.2,
-		run: (add, u, env, t) => {
-			const s = Math.sin(t * 6.5);
-			add('handle.kneeL.y', 0.2 * Math.max(0, s) * env); add('handle.kneeR.y', 0.2 * Math.max(0, -s) * env);
-			add('main.roll', 0.09 * s * env); add('main.y', 0.03 * Math.abs(s) * env);
-		},
-	},
-	greet: {
-		dur: 3.2,
-		run: (add, u, env, t) => {
-			add('main.pitch', 0.42 * Math.sin(Math.min(1, u * 2.2) * Math.PI));
-			if (u > 0.4) { const e = Math.sin(((u - 0.4) / 0.6) * Math.PI); add('handle.wristR.y', 0.5 * e); add('handle.wristR.x', 0.12 * Math.sin(t * 11) * e); }
-		},
-	},
-};
 
 class Gait {
 	constructor(sim, rig) {
@@ -209,8 +170,9 @@ export class Controller {
 		this.sim.ctl.locks = this.rig.joints.map((_, i) => this.locks.has(i));
 	}
 
+	/** Starts a scripted move. One already under way is left to finish rather than stacked on itself. */
 	play(id) {
-		if (GESTURES[id]) this.gestures.push({ id, t: 0 });
+		if (Object.hasOwn(GESTURES, id) && !this.gestures.some((gesture) => gesture.id === id)) this.gestures.push({ id, t: 0 });
 	}
 
 	action(id) {
@@ -257,15 +219,15 @@ export class Controller {
 		}
 	}
 
+	/** Nobody on the strings: the bar drifts slowly, as if held by a patient hand. No bobbing, nothing fast. */
 	_idle(add) {
 		const t = this.t;
-		add('main.roll', 0.1 * Math.sin(t * 0.8) + 0.035 * Math.sin(t * 2.1 + 1));
-		add('main.pitch', 0.06 * Math.sin(t * 0.55 + 2));
-		add('main.yaw', 0.32 * Math.sin(t * 0.21));
-		add('main.y', 0.015 * Math.sin(t * 1.6));
-		add('limb.roll', 0.12 * Math.sin(t * 0.47 + 0.6));
+		add('main.roll', 0.04 * Math.sin(t * 0.5));
+		add('main.pitch', 0.025 * Math.sin(t * 0.37 + 2));
+		add('main.yaw', 0.22 * Math.sin(t * 0.17));
+		add('limb.roll', 0.05 * Math.sin(t * 0.31 + 0.6));
 		if (t > this.nextIdle) {
-			this.play(['wave', 'jig', 'bow', 'wave'][Math.floor(t / 9) % 4]);
+			this.play(['wave', 'nod', 'bow', 'waveR'][Math.floor(t / 9) % 4]);   // quiet moves only: nothing that throws the strings about
 			this.nextIdle = t + 9 + ((t * 7.3) % 5);
 		}
 	}
