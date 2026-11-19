@@ -12,7 +12,8 @@
 
 import * as M from '../shared/math.js';
 import { RIG, LAYERS, indexById } from '../shared/rig-config.js';
-import { buildWrapProxies, stringExclusions, wrapFrame, stringPath } from '../shared/string-path.js';
+import { SHAPES, surfacePoints } from '../shared/puppet-shapes.js';
+import { buildWrapProxies, effectiveAttach, stringExclusions, wrapFrame, stringPath } from '../shared/string-path.js';
 
 /** Default fixed timestep. Many small steps with few solver iterations beat few large steps with many. */
 export const DT = 1 / 240;
@@ -40,6 +41,7 @@ export class PuppetSim {
 		const nb = rig.bodies.length;
 		this.pos = new Float32Array(nb * 3);
 		this.quat = new Float32Array(nb * 4);
+		this.com = new Float32Array(nb * 3);
 		this.prevPos = new Float32Array(nb * 3);
 		this.prevQuat = new Float32Array(nb * 4);
 		this.handlePos = new Float32Array(rig.handles.length * 3);
@@ -79,10 +81,8 @@ export class PuppetSim {
 		world.timestep = this.dt;
 		world.integrationParameters.numSolverIterations = this.opts.iterations;
 
-		const groups = (layer, hits) => {
-			const filter = hits.reduce((mask, name) => mask | LAYERS[name], 0);
-			return ((LAYERS[layer] << 16) | filter) >>> 0;
-		};
+		// Puppet parts collide with the floor and with each other.
+		const groups = (def) => ((LAYERS.body << 16) | LAYERS.floor | (def.collide === false ? 0 : LAYERS.body)) >>> 0;
 
 		const floor = world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(0, -0.5, 0));
 		world.createCollider(
@@ -90,6 +90,9 @@ export class PuppetSim {
 			floor
 		);
 
+		// Each body's colliders are convex hulls of the same turned pieces that are drawn
+		// (puppet-shapes.js). Mass is spread evenly through them, so the centre of mass and
+		// the inertia tensor are those of the real shape.
 		this.bodies = rig.bodies.map((def) => {
 			const body = world.createRigidBody(
 				R.RigidBodyDesc.dynamic()
@@ -98,32 +101,31 @@ export class PuppetSim {
 					.setAngularDamping(0.8)
 					.setCanSleep(false)
 			);
-			let collider;
-			let inertia;
-			const m = def.mass;
-			if (def.shape === 'box') {
-				const [hx, hy, hz] = def.size;
-				collider = R.ColliderDesc.cuboid(hx, hy, hz);
-				inertia = [(m / 3) * (hy * hy + hz * hz), (m / 3) * (hx * hx + hz * hz), (m / 3) * (hx * hx + hy * hy)];
-			} else if (def.shape === 'capsule') {
-				const [r, hh] = def.size;
-				collider = R.ColliderDesc.capsule(hh, r);
-				const h = 2 * hh + r;
-				const side = (m * (3 * r * r + h * h)) / 12;
-				inertia = [side, 0.5 * m * r * r, side];
-			} else {
-				const r = def.size[0];
-				collider = R.ColliderDesc.ball(r);
-				inertia = [0.4 * m * r * r, 0.4 * m * r * r, 0.4 * m * r * r];
-			}
 			const isFoot = def.id.startsWith('foot');
-			collider
-				.setMass(m)
-				.setFriction(isFoot ? 1.1 : 0.55)
-				.setRestitution(0.08)
-				.setCollisionGroups(groups(def.layer, def.hits));
-			world.createCollider(collider, body);
-			return { def, body, invMass: 1 / m, invInertia: inertia.map((v) => 1 / v) };
+			const colliders = [];
+			for (const piece of SHAPES[def.id] || []) {
+				const desc = R.ColliderDesc.convexHull(new Float32Array(surfacePoints(piece)));
+				if (!desc) continue;
+				desc.setDensity(1).setFriction(isFoot ? 1.1 : 0.5).setRestitution(0.08).setCollisionGroups(groups(def));
+				colliders.push(world.createCollider(desc, body));
+			}
+			if (!colliders.length) {
+				colliders.push(world.createCollider(R.ColliderDesc.ball(0.05).setDensity(1).setCollisionGroups(groups(def)), body));
+			}
+			body.recomputeMassPropertiesFromColliders();
+			const density = def.mass / body.mass();
+			for (const collider of colliders) collider.setDensity(density);
+			body.recomputeMassPropertiesFromColliders();
+			const com = body.localCom();
+			const inertia = body.principalInertia();
+			const frame = body.principalInertiaLocalFrame();
+			return {
+				def, body,
+				invMass: 1 / body.mass(),
+				localCom: [com.x, com.y, com.z],
+				invInertia: [1 / inertia.x, 1 / inertia.y, 1 / inertia.z],
+				inertiaFrame: [frame.x, frame.y, frame.z, frame.w],
+			};
 		});
 
 		this.joints = rig.joints.map((def) => {
@@ -178,10 +180,12 @@ export class PuppetSim {
 			const hdef = rig.handles[handle];
 			const bar = rig.bars[this.barIx[hdef.bar]];
 			const restHandle = M.add(M.add(rig.home, bar.offset), hdef.local);
-			const restAttach = M.add(rig.bodies[body].pos, def.at);
+			// The string is tied to a screw eye on the surface, not to a point inside the wood.
+			const at = effectiveAttach(def, rig.bodies, this.wrapProxies);
+			const restAttach = M.add(rig.bodies[body].pos, at);
 			const rest = Number.isFinite(def.length) ? def.length : M.dist(restHandle, restAttach) + (def.slack || 0);
-			const excluded = stringExclusions(def, rig.bodies, this.wrapProxies);
-			this.strings.push({ def, body, handle, rest, excluded, tension: 0, lambda: 0, broken: false, over: 0, path: null });
+			const excluded = stringExclusions(def, at, rig.bodies, this.wrapProxies);
+			this.strings.push({ def, body, handle, at, rest, excluded, tension: 0, lambda: 0, broken: false, over: 0, path: null });
 		}
 		this.tension = new Float32Array(this.strings.length);
 	}
@@ -284,12 +288,16 @@ export class PuppetSim {
 		];
 	}
 
-	/** Inverse effective mass of a body at offset r from its centre, for an impulse along g (need not be unit length). */
-	_invMassAt(i, r, n) {
+	bodyCom(i) { const p = this.com; i *= 3; return [p[i], p[i + 1], p[i + 2]]; }
+
+	/**
+	 * How readily body i responds to a wrench: a force G through its centre of mass plus
+	 * a torque tau (world frame). Returns G.M^-1.G + tau.I^-1.tau, the inverse effective mass.
+	 */
+	_invMassWrench(i, G, tau) {
 		const b = this.bodies[i];
-		const q = this.bodyQuat(i);
-		const local = M.qRot(M.qConj(q), M.cross(r, n));
-		return b.invMass * M.dot(n, n) + local[0] * local[0] * b.invInertia[0] + local[1] * local[1] * b.invInertia[1] + local[2] * local[2] * b.invInertia[2];
+		const local = M.qRot(M.qConj(M.qMul(this.bodyQuat(i), b.inertiaFrame)), tau);
+		return b.invMass * M.dot(G, G) + local[0] * local[0] * b.invInertia[0] + local[1] * local[1] * b.invInertia[1] + local[2] * local[2] * b.invInertia[2];
 	}
 
 	/**
@@ -326,7 +334,7 @@ export class PuppetSim {
 			this.tension[i] = 0;
 			s.path = null;
 			if (!s.def.enabled || s.broken || gain < 0.001) { s.lambda = 0; return; }
-			const attach = M.add(this.bodyPos(s.body), M.qRot(this.bodyQuat(s.body), s.def.at));
+			const attach = M.add(this.bodyPos(s.body), M.qRot(this.bodyQuat(s.body), s.at));
 			const path = stringPath(this.handleAt(s.handle), attach, frame, s.excluded);
 			if (path.length < 1e-6) { s.lambda = 0; return; }
 			s.path = path;
@@ -338,14 +346,18 @@ export class PuppetSim {
 			const dirs = [];
 			for (let k = 0; k < n; k++) dirs.push(M.norm(M.sub(pts[k + 1], pts[k])));
 			const nodes = [];
-			let w = 0;
+			const wrench = new Map();   // per body: net force direction and torque of all its nodes
 			for (let k = 1; k <= n; k++) {
 				const body = k === n ? s.body : path.bodies[k];
 				const g = k === n ? M.scale(dirs[n - 1], -1) : M.sub(dirs[k], dirs[k - 1]);
-				const r = M.sub(pts[k], this.bodyPos(body));
+				const r = M.sub(pts[k], this.bodyCom(body));
 				nodes.push({ body: this.bodies[body].body, p: pts[k], r, g });
-				w += this._invMassAt(body, r, g);
+				const sum = wrench.get(body);
+				const tau = M.cross(r, g);
+				if (sum) { sum.G = M.add(sum.G, g); sum.tau = M.add(sum.tau, tau); } else wrench.set(body, { G: g, tau });
 			}
+			let w = 0;
+			for (const [body, sum] of wrench) w += this._invMassWrench(body, sum.G, sum.tau);
 			const j = s.handle * 3;
 			const k = s.def.k * gain;
 			const soft = s.def.c * gain + dt * k;
@@ -496,10 +508,10 @@ export class PuppetSim {
 			if (!(target.w > 0.001)) return;
 			const tip = this.bodies[e.tipBody].body;
 			const anchor = this.bodies[e.anchorBody].body;
-			const r = M.qRot(this.bodyQuat(e.tipBody), e.def.tip);
-			const p = M.add(this.bodyPos(e.tipBody), r);
+			const p = this.pointAt(e.tipBody, e.def.tip);
 			const S = this.pointAt(e.root.a, e.root.anchorA);
-			const rel = M.sub(this._pointVel(tip, r), this._pointVel(anchor, M.sub(S, this.bodyPos(e.anchorBody))));
+			// Point velocities take the lever arm from each body's centre of mass.
+			const rel = M.sub(this._pointVel(tip, M.sub(p, this.bodyCom(e.tipBody))), this._pointVel(anchor, M.sub(S, this.bodyCom(e.anchorBody))));
 			let F = M.scale(M.sub(M.scale(M.sub(target.pos, p), w0 * w0), M.scale(rel, 1.8 * w0)), e.def.mass * target.w);
 			F = M.clampLen(F, e.def.force * target.w);
 			const J = M.scale(F, dt);
@@ -546,13 +558,41 @@ export class PuppetSim {
 		list.length = 0;
 	}
 
+	/**
+	 * How far any two parts of the puppet currently overlap, in metres (0 when none do),
+	 * and which pair is worst. For tests and on-stage diagnostics.
+	 */
+	deepestOverlap() {
+		if (!this._owner) {
+			this._owner = new Map();
+			this.bodies.forEach((b, i) => { for (let k = 0; k < b.body.numColliders(); k++) this._owner.set(b.body.collider(k).handle, i); });
+		}
+		let depth = 0, pair = null;
+		this.bodies.forEach((b, i) => {
+			for (let k = 0; k < b.body.numColliders(); k++) {
+				const collider = b.body.collider(k);
+				this.world.contactPairsWith(collider, (other) => {
+					const j = this._owner.get(other.handle);
+					if (j === undefined || j <= i) return;
+					this.world.contactPair(collider, other, (manifold) => {
+						for (let n = 0; n < manifold.numContacts(); n++) {
+							const d = -manifold.contactDist(n);
+							if (d > depth) { depth = d; pair = [this.rig.bodies[i].id, this.rig.bodies[j].id]; }
+						}
+					});
+				});
+			}
+		});
+		return { depth, pair };
+	}
+
 	// ----------------------------------------------------------- read back
 
 	_readBack(snap) {
 		this.prevPos.set(this.pos);
 		this.prevQuat.set(this.quat);
 		let broken = false;
-		this.bodies.forEach(({ body }, i) => {
+		this.bodies.forEach(({ body, localCom }, i) => {
 			const t = body.translation();
 			const r = body.rotation();
 			if (!Number.isFinite(t.x + t.y + t.z + r.x + r.w) || Math.abs(t.x) > 40 || Math.abs(t.y) > 40 || Math.abs(t.z) > 40) {
@@ -561,6 +601,8 @@ export class PuppetSim {
 			}
 			this.pos[i * 3] = t.x; this.pos[i * 3 + 1] = t.y; this.pos[i * 3 + 2] = t.z;
 			this.quat[i * 4] = r.x; this.quat[i * 4 + 1] = r.y; this.quat[i * 4 + 2] = r.z; this.quat[i * 4 + 3] = r.w;
+			const c = M.qRot([r.x, r.y, r.z, r.w], localCom);
+			this.com[i * 3] = t.x + c[0]; this.com[i * 3 + 1] = t.y + c[1]; this.com[i * 3 + 2] = t.z + c[2];
 			const lv = body.linvel();
 			const ls = Math.hypot(lv.x, lv.y, lv.z);
 			if (ls > MAX_LINVEL) { const s = MAX_LINVEL / ls; body.setLinvel({ x: lv.x * s, y: lv.y * s, z: lv.z * s }, true); }

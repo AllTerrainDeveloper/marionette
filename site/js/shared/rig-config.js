@@ -12,35 +12,40 @@
 
 const D = Math.PI / 180;
 
-/** Collision layers. `hits` lists the layers a body collides with. */
-export const LAYERS = { floor: 1, torso: 2, armL: 4, armR: 8, legL: 16, legR: 32, upper: 64 };
+/**
+ * Collision layers. Every part of the puppet collides with the floor and with
+ * every other part; directly jointed neighbours are exempt (the joint handles
+ * them). Set `collide: false` on a body to take it out of self-collision.
+ */
+export const LAYERS = { floor: 1, body: 2 };
 
-// id, shape, size, rest centre, mass (kg), layer, layers it hits
-// box: half extents · capsule: [radius, halfHeight] along Y · ball: [radius]
+// The rigid bodies: id, rest position of the body's origin, mass (kg).
+// Their solid form — what is drawn, what collides and what strings wrap
+// around — is described once, in puppet-shapes.js. Mass is spread evenly
+// through that form, so centre of mass and inertia follow the real shape.
+const body = (id, pos, mass) => ({ id, pos, mass });
+const arm = (side, sx) => [
+	body(`clavicle${side}`, [sx * 0.145, 1.33, 0], 0.18),
+	body(`upperArm${side}`, [sx * 0.24, 1.19, 0], 0.36),
+	body(`forearm${side}`, [sx * 0.24, 0.93, 0], 0.26),
+	body(`hand${side}`, [sx * 0.24, 0.755, 0], 0.13),
+];
+const leg = (side, sx) => [
+	body(`thigh${side}`, [sx * 0.095, 0.66, 0], 0.75),
+	body(`shin${side}`, [sx * 0.095, 0.27, 0], 0.48),
+	body(`foot${side}`, [sx * 0.095, 0.035, 0.05], 0.28),
+];
+
 export const BODIES = [
-	{ id: 'pelvis', shape: 'box', size: [0.15, 0.07, 0.09], pos: [0, 0.92, 0], mass: 1.6, layer: 'torso', hits: ['floor', 'armL', 'armR'] },
-	{ id: 'abdomen', shape: 'box', size: [0.125, 0.07, 0.08], pos: [0, 1.06, 0], mass: 1.0, layer: 'torso', hits: ['floor', 'armL', 'armR'] },
-	{ id: 'chest', shape: 'box', size: [0.17, 0.115, 0.095], pos: [0, 1.245, 0], mass: 1.8, layer: 'torso', hits: ['floor', 'armL', 'armR'] },
-	{ id: 'neck', shape: 'capsule', size: [0.04, 0.015], pos: [0, 1.4, 0], mass: 0.18, layer: 'upper', hits: ['floor'] },
-	{ id: 'head', shape: 'ball', size: [0.115], pos: [0, 1.545, 0.005], mass: 1.0, layer: 'torso', hits: ['floor', 'armL', 'armR'] },
-
-	{ id: 'clavicleL', shape: 'box', size: [0.085, 0.028, 0.03], pos: [0.145, 1.33, 0], mass: 0.18, layer: 'upper', hits: ['floor'] },
-	{ id: 'upperArmL', shape: 'capsule', size: [0.04, 0.1], pos: [0.24, 1.19, 0], mass: 0.36, layer: 'upper', hits: ['floor'] },
-	{ id: 'forearmL', shape: 'capsule', size: [0.034, 0.085], pos: [0.24, 0.93, 0], mass: 0.26, layer: 'armL', hits: ['floor', 'torso', 'armR', 'legL', 'legR'] },
-	{ id: 'handL', shape: 'box', size: [0.022, 0.055, 0.04], pos: [0.24, 0.755, 0], mass: 0.13, layer: 'armL', hits: ['floor', 'torso', 'armR', 'legL', 'legR'] },
-
-	{ id: 'clavicleR', shape: 'box', size: [0.085, 0.028, 0.03], pos: [-0.145, 1.33, 0], mass: 0.18, layer: 'upper', hits: ['floor'] },
-	{ id: 'upperArmR', shape: 'capsule', size: [0.04, 0.1], pos: [-0.24, 1.19, 0], mass: 0.36, layer: 'upper', hits: ['floor'] },
-	{ id: 'forearmR', shape: 'capsule', size: [0.034, 0.085], pos: [-0.24, 0.93, 0], mass: 0.26, layer: 'armR', hits: ['floor', 'torso', 'armL', 'legL', 'legR'] },
-	{ id: 'handR', shape: 'box', size: [0.022, 0.055, 0.04], pos: [-0.24, 0.755, 0], mass: 0.13, layer: 'armR', hits: ['floor', 'torso', 'armL', 'legL', 'legR'] },
-
-	{ id: 'thighL', shape: 'capsule', size: [0.06, 0.135], pos: [0.095, 0.66, 0], mass: 0.75, layer: 'legL', hits: ['floor', 'legR', 'armL', 'armR'] },
-	{ id: 'shinL', shape: 'capsule', size: [0.047, 0.135], pos: [0.095, 0.27, 0], mass: 0.48, layer: 'legL', hits: ['floor', 'legR', 'armL', 'armR'] },
-	{ id: 'footL', shape: 'box', size: [0.05, 0.035, 0.115], pos: [0.095, 0.035, 0.05], mass: 0.28, layer: 'legL', hits: ['floor', 'legR'] },
-
-	{ id: 'thighR', shape: 'capsule', size: [0.06, 0.135], pos: [-0.095, 0.66, 0], mass: 0.75, layer: 'legR', hits: ['floor', 'legL', 'armL', 'armR'] },
-	{ id: 'shinR', shape: 'capsule', size: [0.047, 0.135], pos: [-0.095, 0.27, 0], mass: 0.48, layer: 'legR', hits: ['floor', 'legL', 'armL', 'armR'] },
-	{ id: 'footR', shape: 'box', size: [0.05, 0.035, 0.115], pos: [-0.095, 0.035, 0.05], mass: 0.28, layer: 'legR', hits: ['floor', 'legL'] },
+	body('pelvis', [0, 0.92, 0], 1.6),
+	body('abdomen', [0, 1.06, 0], 1.0),
+	body('chest', [0, 1.245, 0], 1.8),
+	body('neck', [0, 1.4, 0], 0.18),
+	body('head', [0, 1.545, 0.005], 1.0),
+	...arm('L', 1),
+	...arm('R', -1),
+	...leg('L', 1),
+	...leg('R', -1),
 ];
 
 // Joints. `ball` joints take per-axis limits about the parent's X / Y / Z;
@@ -92,10 +97,10 @@ export const BARS = [
 
 // String handles: where a string leaves a bar, in bar-local coordinates.
 export const HANDLES = [
-	{ id: 'head', bar: 'main', local: [0, 0, -0.035], label: 'Head' },
+	{ id: 'head', bar: 'main', local: [0, 0, 0.005], label: 'Head' },
 	{ id: 'back', bar: 'main', local: [0, 0, -0.29], label: 'Back' },
-	{ id: 'shoulderL', bar: 'main', local: [0.19, 0, 0], label: 'L shoulder' },
-	{ id: 'shoulderR', bar: 'main', local: [-0.19, 0, 0], label: 'R shoulder' },
+	{ id: 'shoulderL', bar: 'main', local: [0.19, 0, -0.06], label: 'L shoulder' },
+	{ id: 'shoulderR', bar: 'main', local: [-0.19, 0, -0.06], label: 'R shoulder' },
 	{ id: 'wristL', bar: 'limb', local: [0.37, 0, 0.09], label: 'L hand' },
 	{ id: 'wristR', bar: 'limb', local: [-0.37, 0, 0.09], label: 'R hand' },
 	{ id: 'kneeL', bar: 'limb', local: [0.21, 0, 0], label: 'L knee' },
@@ -107,7 +112,8 @@ export const HANDLES = [
 ];
 
 // The twelve default strings. `at` is the attachment point in the body's local
-// frame. `slack` is added to the rest length measured in the rest pose
+// frame. A point inside the wood is moved out to the surface, where the screw
+// eye would be: straight out from the piece's axis, or along `out` if given. `slack` is added to the rest length measured in the rest pose
 // (negative = pre-tensioned). k: elasticity (N/m), c: damping (N·s/m),
 // max: tension ceiling (N). Strings only ever pull.
 const str = (n, id, label, body, at, handle, slack, k, c, max, group) => ({
@@ -115,18 +121,19 @@ const str = (n, id, label, body, at, handle, slack, k, c, max, group) => ({
 });
 
 export const STRINGS = [
-	str(1, 'head', 'Head', 'head', [0, 0.1, -0.045], 'head', -0.004, 9000, 90, 420, 'support'),
-	str(2, 'back', 'Upper back', 'chest', [0, 0.06, -0.095], 'back', 0.012, 7000, 80, 420, 'support'),
-	str(3, 'shoulderL', 'Left shoulder', 'chest', [0.15, 0.115, 0], 'shoulderL', -0.004, 9000, 90, 420, 'support'),
-	str(4, 'shoulderR', 'Right shoulder', 'chest', [-0.15, 0.115, 0], 'shoulderR', -0.004, 9000, 90, 420, 'support'),
-	str(5, 'wristL', 'Left wrist', 'forearmL', [0, -0.105, 0], 'wristL', 0.03, 2600, 22, 160, 'arms'),
-	str(6, 'wristR', 'Right wrist', 'forearmR', [0, -0.105, 0], 'wristR', 0.03, 2600, 22, 160, 'arms'),
-	str(7, 'kneeL', 'Left knee', 'thighL', [0, -0.17, 0.058], 'kneeL', 0.012, 3600, 34, 220, 'legs'),
-	str(8, 'kneeR', 'Right knee', 'thighR', [0, -0.17, 0.058], 'kneeR', 0.012, 3600, 34, 220, 'legs'),
-	str(9, 'ankleL', 'Left ankle', 'footL', [0, 0.035, 0.055], 'ankleL', 0.045, 2600, 24, 160, 'legs'),
-	str(10, 'ankleR', 'Right ankle', 'footR', [0, 0.035, 0.055], 'ankleR', 0.045, 2600, 24, 160, 'legs'),
-	str(11, 'hipL', 'Left hip', 'pelvis', [0.155, 0.03, -0.02], 'hipL', 0.015, 6000, 70, 420, 'support'),
-	str(12, 'hipR', 'Right hip', 'pelvis', [-0.155, 0.03, -0.02], 'hipR', 0.015, 6000, 70, 420, 'support'),
+	// The head hangs from the crown of its hat, straight above its centre of mass.
+	{ ...str(1, 'head', 'Head', 'head', [0, 0.1, 0], 'head', 0.002, 9000, 90, 420, 'support'), out: [0, 1, 0] },
+	str(2, 'back', 'Upper back', 'chest', [0, 0.06, -0.08], 'back', 0.012, 7000, 80, 420, 'support'),
+	str(3, 'shoulderL', 'Left shoulder', 'chest', [0.11, 0.07, -0.05], 'shoulderL', -0.006, 9000, 90, 420, 'support'),
+	str(4, 'shoulderR', 'Right shoulder', 'chest', [-0.11, 0.07, -0.05], 'shoulderR', -0.006, 9000, 90, 420, 'support'),
+	str(5, 'wristL', 'Left wrist', 'forearmL', [0, -0.09, 0.01], 'wristL', 0.03, 2600, 22, 160, 'arms'),
+	str(6, 'wristR', 'Right wrist', 'forearmR', [0, -0.09, 0.01], 'wristR', 0.03, 2600, 22, 160, 'arms'),
+	str(7, 'kneeL', 'Left knee', 'thighL', [0, -0.14, 0.02], 'kneeL', 0.012, 3600, 34, 220, 'legs'),
+	str(8, 'kneeR', 'Right knee', 'thighR', [0, -0.14, 0.02], 'kneeR', 0.012, 3600, 34, 220, 'legs'),
+	{ ...str(9, 'ankleL', 'Left ankle', 'footL', [0, 0, 0.05], 'ankleL', 0.045, 2600, 24, 160, 'legs'), out: [0, 1, 0] },
+	{ ...str(10, 'ankleR', 'Right ankle', 'footR', [0, 0, 0.05], 'ankleR', 0.045, 2600, 24, 160, 'legs'), out: [0, 1, 0] },
+	str(11, 'hipL', 'Left hip', 'pelvis', [0.12, 0.03, -0.02], 'hipL', 0.015, 6000, 70, 420, 'support'),
+	str(12, 'hipR', 'Right hip', 'pelvis', [-0.12, 0.03, -0.02], 'hipR', 0.015, 6000, 70, 420, 'support'),
 ];
 
 // IK end effectors: a two-bone chain (root joint → mid joint → tip) whose tip

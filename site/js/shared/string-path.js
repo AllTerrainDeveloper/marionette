@@ -1,117 +1,234 @@
-// String-versus-body collision: where a string would cut through a limb, it is
-// routed over the limb's surface instead.
+// String-versus-puppet collision: where a string would cut through the wood,
+// it is routed over the surface instead.
 //
-// Every rigid body gets a capsule "wrap proxy" (a ball is a zero-length
-// capsule; a box becomes a pill along its longest side). A string is a taut
-// polyline from its handle to its attachment point. If a segment of it comes
-// closer to a proxy's axis than the proxy's radius, a via point is inserted on
-// the proxy's surface, opposite the axis, at the point of closest approach.
-// At first touch that point lies on the string itself, so the path changes
-// continuously as a limb moves into a string — no popping.
+// Strings collide with the very shapes that are drawn and that the physics
+// engine collides: the turned pieces of puppet-shapes.js. A piece is a surface
+// of revolution with a (possibly squashed) transform, so the test is done in
+// the piece's own unscaled space, where it is perfectly round: along a leg of
+// the string, compare the distance from the piece's axis with the profile's
+// radius at that height, and find where the leg is deepest inside. A point is
+// inside the squashed piece exactly when it is inside the round one, so the
+// test is exact for the shape on screen.
 //
-// This is pure geometry on flat transform arrays. The simulation uses it to
-// solve the string through its via points (see sim.js), and both renderers
-// call the same function on the transforms they display, so what you see is
-// exactly what the physics solved — with no extra data on the wire.
+// A string is a taut polyline from its handle to its attachment point. Where
+// a leg is inside a piece, a via point is put on the surface straight out from
+// the axis. At first touch that point lies on the string itself, so the path
+// changes continuously as a limb moves into a string — no popping. A deep wrap
+// gets further via points on the same piece, so the string follows the curve
+// instead of chording through it.
+//
+// A string collides with the body it is tied to as well: its attachment point
+// is a screw eye on the surface, and if the limb turns, the string winds
+// around it.
+//
+// Pure geometry on flat transform arrays. The simulation solves the string
+// through these via points (sim.js), and both renderers call the same function
+// on the transforms they display, so what you see is what the physics solved —
+// with no extra data on the wire.
 
-import { add, sub, dot, cross, scale, addScaled, len, norm, qRot, clamp } from './math.js';
+import { add, sub, dot, addScaled, len, qRot, qMul, qConj, clamp } from './math.js';
+import { SHAPES, radiusTable, radiusAt } from './puppet-shapes.js';
 
 /** Half the string's thickness plus a hair, so it rests on the surface rather than in it. */
 export const STRING_MARGIN = 0.004;
-/** The most limbs one string may wrap over at once. */
-export const MAX_VIAS = 3;
-/** A body whose surface is this close to the attachment point at rest never deflects that string. */
-const NEAR_ATTACH = 0.025;
+/** The most via points one string may have. */
+export const MAX_VIAS = 10;
+/** The most via points one string may have on a single piece. */
+const MAX_PER_PIECE = 4;
+/** A second via on the same piece is only worth it when the string still cuts this deep. */
+const REWRAP_DEPTH = 0.003;
+/** Closest approaches this near a leg's end are that end's business, not a new bend. */
+const END_CLEARANCE = 0.012;
+/** Samples along a leg when looking for its deepest point inside a piece. */
+const SCAN = 8;
 const EPS = 1e-9;
 
-/** Capsule proxies in each body's local frame: { a, b, r, bound }. */
-export function buildWrapProxies(bodies) {
-	return bodies.map((def) => {
-		if (def.wrap === false) return null;
-		if (def.shape === 'ball') return { a: [0, 0, 0], b: [0, 0, 0], r: def.size[0], bound: def.size[0] };
-		if (def.shape === 'capsule') {
-			const [r, hh] = def.size;
-			return { a: [0, -hh, 0], b: [0, hh, 0], r, bound: hh + r };
+/** Flat list of collision pieces, one per solid piece of every body. */
+export function buildWrapProxies(bodies, shapes = SHAPES) {
+	const out = [];
+	bodies.forEach((def, body) => {
+		for (const p of shapes[def.id] || []) {
+			const table = radiusTable(p.profile);
+			const y0 = table[0][0], y1 = table[table.length - 1][0];
+			const maxR = Math.max(...table.map((row) => row[1]));
+			out.push({
+				body, at: p.at, rot: p.rot, inv: qConj(p.rot), scale: p.scale, table, y0, y1,
+				flatBottom: table[0][1] > 1e-4, flatTop: table[table.length - 1][1] > 1e-4,
+				radial: (p.scale[0] + p.scale[2]) / 2,
+				bound: Math.hypot(maxR * Math.max(p.scale[0], p.scale[2]), Math.max(Math.abs(y0), Math.abs(y1)) * p.scale[1]),
+			});
 		}
-		// Box: a pill along the longest side, as thick as the other two sides on average.
-		const h = def.size;
-		const k = h[0] >= h[1] && h[0] >= h[2] ? 0 : h[1] >= h[2] ? 1 : 2;
-		const r = (h[(k + 1) % 3] + h[(k + 2) % 3]) / 2;
-		const half = Math.max(0, h[k] - r);
-		const a = [0, 0, 0], b = [0, 0, 0];
-		a[k] = -half; b[k] = half;
-		return { a, b, r, bound: half + r };
-	});
-}
-
-/** Closest points between segments p1-q1 and p2-q2 (Ericson, Real-Time Collision Detection). */
-export function closestSegSeg(p1, q1, p2, q2) {
-	const d1 = sub(q1, p1), d2 = sub(q2, p2), r = sub(p1, p2);
-	const a = dot(d1, d1), e = dot(d2, d2), f = dot(d2, r);
-	let s = 0, t = 0;
-	if (a > EPS || e > EPS) {
-		if (a <= EPS) {
-			t = clamp(f / e, 0, 1);
-		} else {
-			const c = dot(d1, r);
-			if (e <= EPS) {
-				s = clamp(-c / a, 0, 1);
-			} else {
-				const b = dot(d1, d2);
-				const denom = a * e - b * b;
-				s = denom > EPS ? clamp((b * f - c * e) / denom, 0, 1) : 0;
-				t = (b * s + f) / e;
-				if (t < 0) { t = 0; s = clamp(-c / a, 0, 1); }
-				else if (t > 1) { t = 1; s = clamp((b - c) / a, 0, 1); }
-			}
-		}
-	}
-	return { s, t, c1: addScaled(p1, d1, s), c2: addScaled(p2, d2, t) };
-}
-
-const pointSegDist = (p, a, b) => {
-	const ab = sub(b, a);
-	const l2 = dot(ab, ab);
-	const t = l2 > EPS ? clamp(dot(sub(p, a), ab) / l2, 0, 1) : 0;
-	return len(sub(p, addScaled(a, ab, t)));
-};
-
-/** Bodies that never deflect a given string: the one it is tied to, and any it starts out touching. */
-export function stringExclusions(def, bodies, proxies) {
-	const own = bodies.findIndex((b) => b.id === def.body);
-	const out = new Set([own]);
-	if (own < 0) return out;
-	const attach = add(bodies[own].pos, def.at);
-	bodies.forEach((body, i) => {
-		const proxy = proxies[i];
-		if (!proxy) { out.add(i); return; }
-		const d = pointSegDist(attach, add(body.pos, proxy.a), add(body.pos, proxy.b)) - proxy.r;
-		if (d < NEAR_ATTACH) out.add(i);
 	});
 	return out;
 }
 
-/** World-space proxy axes for the current transforms. Compute once per step / frame, reuse for every string. */
+function pointSegDist(p, a, b) {
+	const ab = sub(b, a);
+	const l2 = dot(ab, ab);
+	const t = l2 > EPS ? clamp(dot(sub(p, a), ab) / l2, 0, 1) : 0;
+	return len(sub(p, addScaled(a, ab, t)));
+}
+
+/** World point -> a piece's own unscaled space, where its axis is Y and it is round. */
+const toPiece = (f, x) => {
+	const v = qRot(f.qi, sub(x, f.o));
+	return [v[0] / f.scale[0], v[1] / f.scale[1], v[2] / f.scale[2]];
+};
+const fromPiece = (f, u) => add(f.o, qRot(f.q, [u[0] * f.scale[0], u[1] * f.scale[1], u[2] * f.scale[2]]));
+
+/**
+ * Tests the leg p-q against piece f. Returns null if it stays clear, else
+ * { s, depth, point }: where along the leg it is deepest inside the piece, how deep
+ * (metres), and the point on the surface (plus margin) to route through instead.
+ *
+ * In the piece's own space the leg is a straight line and the piece is round, so the
+ * depth at any point of the leg is simply (profile radius at that height) - (distance
+ * from the axis). The deepest point is found by scanning the stretch of the leg that
+ * lies within the piece's height, then refining. This also catches a string running
+ * alongside a limb, or straight down through the torso — cases a closest-approach-to-
+ * the-axis test misses, because there the axis distance says nothing about the bulge.
+ */
+function legHit(f, p, q, margin) {
+	const P = toPiece(f, p), Q = toPiece(f, q);
+	const dx = Q[0] - P[0], dy = Q[1] - P[1], dz = Q[2] - P[2];
+	let s0 = 0, s1 = 1;
+	if (Math.abs(dy) < 1e-9) {
+		if (P[1] < f.y0 || P[1] > f.y1) return null;
+	} else {
+		const a = (f.y0 - P[1]) / dy, b = (f.y1 - P[1]) / dy;
+		s0 = Math.max(0, Math.min(a, b));
+		s1 = Math.min(1, Math.max(a, b));
+		if (s0 >= s1) return null;
+	}
+	// A flat end (a drum's face) can be the nearest way out, but only for a leg that comes
+	// in through that face without going out through the opposite one; a leg that goes
+	// clean through a plate has to go round its rim.
+	const top = Math.max(P[1], Q[1]), bottom = Math.min(P[1], Q[1]);
+	const overTop = f.flatTop && top > f.y1 && bottom > f.y0;
+	const underBottom = f.flatBottom && bottom < f.y0 && top < f.y1;
+	const sy = f.scale[1];
+	// Depth below the surface, in metres: the smaller of the way out sideways and the way out through a face.
+	const depthAt = (s) => {
+		const y = P[1] + dy * s;
+		let d = (radiusAt(f.table, y) - Math.hypot(P[0] + dx * s, P[2] + dz * s)) * f.radial;
+		if (overTop) d = Math.min(d, (f.y1 - y) * sy);
+		if (underBottom) d = Math.min(d, (y - f.y0) * sy);
+		return d;
+	};
+	const step = (s1 - s0) / SCAN;
+	let bestS = s0, bestD = -Infinity;
+	for (let i = 0; i <= SCAN; i++) {
+		const s = s0 + step * i;
+		const d = depthAt(s);
+		if (d > bestD) { bestD = d; bestS = s; }
+	}
+	let lo = Math.max(s0, bestS - step), hi = Math.min(s1, bestS + step);
+	for (let i = 0; i < 7; i++) {
+		const m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
+		if (depthAt(m1) < depthAt(m2)) lo = m1; else hi = m2;
+	}
+	const s = (lo + hi) / 2;
+	const depth = depthAt(s) + margin;
+	if (depth <= 0) return null;
+	const cx = P[0] + dx * s, cy = P[1] + dy * s, cz = P[2] + dz * s;
+	const r = radiusAt(f.table, cy);
+	const rho = Math.hypot(cx, cz);
+	const sideways = (r - rho) * f.radial;
+	if (overTop && (f.y1 - cy) * sy < sideways) return { s, depth, point: fromPiece(f, [cx, f.y1 + margin / sy, cz]) };
+	if (underBottom && (cy - f.y0) * sy < sideways) return { s, depth, point: fromPiece(f, [cx, f.y0 - margin / sy, cz]) };
+	const reach = r + margin / f.radial;
+	let nx, nz;
+	if (rho > 1e-6) { nx = cx / rho; nz = cz / rho; }
+	else {
+		// Dead on the axis: leave sideways, square to the leg.
+		const l = Math.hypot(dx, dz);
+		if (l > 1e-6) { nx = dz / l; nz = -dx / l; } else { nx = 0; nz = 1; }
+	}
+	return { s, depth, point: fromPiece(f, [nx * reach, cy, nz * reach]) };
+}
+
+/**
+ * Where a string is actually tied: `def.at`, moved out to the surface if it lies inside
+ * the body (a screw eye cannot be in the middle of the wood). Body-local coordinates.
+ */
+export function effectiveAttach(def, bodies, proxies) {
+	const own = bodies.findIndex((b) => b.id === def.body);
+	let at = [def.at[0], def.at[1], def.at[2]];
+	if (own < 0) return at;
+	const mine = proxies.filter((p) => p.body === own);
+	const toLocal = (p, x) => { const v = qRot(p.inv, sub(x, p.at)); return [v[0] / p.scale[0], v[1] / p.scale[1], v[2] / p.scale[2]]; };
+	const clearance = STRING_MARGIN + 0.0008;
+	const inside = (x) => mine.some((p) => { const u = toLocal(p, x); const r = radiusAt(p.table, u[1]); return r > 0 && Math.hypot(u[0], u[2]) < r + clearance / p.radial; });
+
+	if (def.out) {
+		// Leave along a given direction until clear of every piece of the body.
+		const dir = def.out;
+		const l = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+		for (let step = 0; step < 300 && inside(at); step++) at = addScaled(at, dir, 0.001 / l);
+		return at;
+	}
+	for (let pass = 0; pass < 4; pass++) {
+		let moved = false;
+		for (const p of mine) {
+			const u = toLocal(p, at);
+			const r = radiusAt(p.table, u[1]);
+			if (r <= 0) continue;
+			const reach = r + clearance / p.radial;
+			const rho = Math.hypot(u[0], u[2]);
+			if (rho >= reach) continue;
+			const nx = rho > 1e-6 ? u[0] / rho : 0, nz = rho > 1e-6 ? u[2] / rho : 1;
+			at = add(p.at, qRot(p.rot, [nx * reach * p.scale[0], u[1] * p.scale[1], nz * reach * p.scale[2]]));
+			moved = true;
+		}
+		if (!moved) break;
+	}
+	return at;
+}
+
+/** World-space pieces for the current transforms. Compute once per step / frame, reuse for every string. */
 export function wrapFrame(proxies, pos, quat, frame = []) {
-	for (let i = 0; i < proxies.length; i++) {
-		const proxy = proxies[i];
-		if (!proxy) { frame[i] = null; continue; }
+	frame.length = proxies.length;
+	for (let k = 0; k < proxies.length; k++) {
+		const p = proxies[k];
+		const i = p.body;
 		const c = [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]];
-		const q = [quat[i * 4], quat[i * 4 + 1], quat[i * 4 + 2], quat[i * 4 + 3]];
-		frame[i] = { c, a: add(c, qRot(q, proxy.a)), b: add(c, qRot(q, proxy.b)), r: proxy.r, bound: proxy.bound };
+		const qb = [quat[i * 4], quat[i * 4 + 1], quat[i * 4 + 2], quat[i * 4 + 3]];
+		const q = qMul(qb, p.rot);
+		frame[k] = { body: i, o: add(c, qRot(qb, p.at)), q, qi: qConj(q), scale: p.scale, radial: p.radial, table: p.table, y0: p.y0, y1: p.y1, flatBottom: p.flatBottom, flatTop: p.flatTop, bound: p.bound };
 	}
 	return frame;
 }
 
 /**
- * Routes a string from `from` (handle) to `to` (attachment) around the bodies in `frame`.
+ * Pieces a given string never bends around: those of other bodies that already contain
+ * its attachment point in the rest pose (bending cannot free an end that is inside).
+ */
+export function stringExclusions(def, at, bodies, proxies) {
+	const own = bodies.findIndex((b) => b.id === def.body);
+	const out = new Set();
+	if (own < 0) return out;
+	const pos = new Float32Array(bodies.length * 3);
+	const quat = new Float32Array(bodies.length * 4);
+	bodies.forEach((b, i) => { pos.set(b.pos, i * 3); quat[i * 4 + 3] = 1; });
+	const attach = add(bodies[own].pos, at);
+	wrapFrame(proxies, pos, quat).forEach((f, k) => {
+		if (f.body === own) return;
+		const u = toPiece(f, attach);
+		const r = radiusAt(f.table, u[1]);
+		if (r > 0 && Math.hypot(u[0], u[2]) < r + 0.002 / f.radial) out.add(k);
+	});
+	return out;
+}
+
+/**
+ * Routes a string from `from` (handle) to `to` (attachment) around the pieces in `frame`.
  * Returns { points, bodies, length }: points[0] is the handle, the last is the attachment,
  * anything between is a via point resting on body `bodies[i]` (-1 for the two ends).
  */
 export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN) {
 	const points = [from, to];
 	const bodies = [-1, -1];
-	let used = null;
+	let counts = null;
 	for (let n = 0; n < MAX_VIAS; n++) {
 		let best = null;
 		for (let i = 0; i < points.length - 1; i++) {
@@ -120,47 +237,38 @@ export function stringPath(from, to, frame, excluded, margin = STRING_MARGIN) {
 			if (segLen < 0.03) continue;
 			for (let k = 0; k < frame.length; k++) {
 				const f = frame[k];
-				if (!f || excluded.has(k) || (used && used.has(k))) continue;
-				const reach = f.r + margin;
-				if (pointSegDist(f.c, p, q) > f.bound + margin) continue;
-				const hit = closestSegSeg(p, q, f.a, f.b);
-				// A string end sitting inside a body cannot be fixed by bending the string.
-				if (hit.s * segLen < 0.012 || (1 - hit.s) * segLen < 0.012) continue;
-				const away = sub(hit.c1, hit.c2);
-				const dist = len(away);
-				const depth = reach - dist;
-				if (depth <= 0 || (best && depth <= best.depth)) continue;
-				let normal;
-				if (dist > 1e-6) normal = scale(away, 1 / dist);
-				else {
-					// Dead centre: leave sideways, perpendicular to both the string and the limb.
-					normal = norm(cross(sub(q, p), sub(f.b, f.a)));
-					if (len(normal) < 0.5) normal = norm(cross(sub(q, p), [0.31, 0.77, 0.55]));
-				}
-				best = { depth, at: i + 1, body: k, point: addScaled(hit.c2, normal, reach) };
+				const seen = counts ? counts[k] || 0 : 0;
+				if (seen >= MAX_PER_PIECE || (excluded && excluded.has(k))) continue;
+				if (pointSegDist(f.o, p, q) > f.bound + margin) continue;
+				const hit = legHit(f, p, q, margin);
+				if (!hit || hit.depth <= (seen ? REWRAP_DEPTH : 0) || (best && hit.depth <= best.depth)) continue;
+				// A leg end sitting in or on a piece cannot be fixed by bending the leg there.
+				if (hit.s * segLen < END_CLEARANCE || (1 - hit.s) * segLen < END_CLEARANCE) continue;
+				best = { depth: hit.depth, at: i + 1, piece: k, body: f.body, point: hit.point };
 			}
 		}
 		if (!best) break;
 		points.splice(best.at, 0, best.point);
 		bodies.splice(best.at, 0, best.body);
-		(used || (used = new Set())).add(best.body);
+		counts = counts || {};
+		counts[best.piece] = (counts[best.piece] || 0) + 1;
 	}
 	let length = 0;
 	for (let i = 0; i < points.length - 1; i++) length += len(sub(points[i + 1], points[i]));
 	return { points, bodies, length };
 }
 
-/** How deep a path still cuts into any (non-excluded) body, in metres. For tests and benchmarks. */
+/** How deep a path still cuts into any (non-excluded) piece, in metres. For tests and benchmarks. */
 export function pathPenetration(points, frame, excluded) {
 	let worst = 0;
 	for (let i = 0; i < points.length - 1; i++) {
+		const segLen = len(sub(points[i + 1], points[i]));
 		for (let k = 0; k < frame.length; k++) {
 			const f = frame[k];
-			if (!f || excluded.has(k)) continue;
-			const hit = closestSegSeg(points[i], points[i + 1], f.a, f.b);
-			const segLen = len(sub(points[i + 1], points[i]));
-			if (hit.s * segLen < 0.012 || (1 - hit.s) * segLen < 0.012) continue;
-			worst = Math.max(worst, f.r - len(sub(hit.c1, hit.c2)));
+			if ((excluded && excluded.has(k)) || pointSegDist(f.o, points[i], points[i + 1]) > f.bound) continue;
+			const hit = legHit(f, points[i], points[i + 1], 0);
+			if (!hit || hit.s * segLen < END_CLEARANCE || (1 - hit.s) * segLen < END_CLEARANCE) continue;
+			worst = Math.max(worst, hit.depth);
 		}
 	}
 	return worst;

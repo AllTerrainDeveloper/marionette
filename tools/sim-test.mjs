@@ -3,7 +3,7 @@ import RAPIER from '../site/vendor/rapier.mjs';
 import { PuppetSim } from '../site/js/stage/sim.js';
 import { RIG } from '../site/js/shared/rig-config.js';
 import * as M from '../site/js/shared/math.js';
-import { wrapFrame, pathPenetration } from '../site/js/shared/string-path.js';
+import { buildMeshes, stringsInsideWood } from './lib/mesh-metric.mjs';
 
 await RAPIER.init();
 const sim = new PuppetSim(RAPIER);
@@ -103,39 +103,47 @@ sim.ctl.stringGain = 1; sim.ctl.tone = { spine: 1, head: 1, arms: 1, legs: 1 };
 run(6); report('re-strung');
 check('stands back up when re-strung', sim.bodyPos(ix.head)[1] > 1.4, `head y ${sim.bodyPos(ix.head)[1].toFixed(3)}`);
 
-// 9. Strings collide with the puppet: fold it up under a low, tilted bar so strings
-//    must cross limbs, then compare how deep they cut with collisions on and off.
+// 9. Strings collide with the puppet. Fold it up under a low, tilting bar so strings must
+//    cross limbs, then measure — against the real rendered meshes, not a stand-in — how
+//    much string lies inside the wood with collisions off and on.
 {
-	const scenario = (opts) => {
+	const model = buildMeshes();
+	const scenario = (opts, drive) => {
 		const s2 = new PuppetSim(RAPIER, RIG, opts);
-		const frame = [];
-		let cut = 0, worst = 0, steps = 0, wrapped = 0;
+		let cut = 0, worst = 0, where = '', samples = 0, overlap = 0, pair = '';
 		const total = Math.round(14 / s2.dt);
 		for (let i = 0; i < total; i++) {
-			const t = i * s2.dt;
-			const q = M.qFromYPR(Math.sin(t * 0.9) * 1.6, 0.75 * Math.sin(t * 1.3), 0.7 * Math.sin(t * 1.1 + 1));
-			RIG.bars.forEach((b, k) => { s2.ctl.bars[k].pos = M.add(M.add(RIG.home, [0.25 * Math.sin(t * 0.7), -0.45 + 0.25 * Math.sin(t * 1.7), 0.2 * Math.cos(t * 0.8)]), M.qRot(q, b.offset)); s2.ctl.bars[k].quat = q; });
-			s2.ctl.pull[4] = 0.4 + 0.3 * Math.sin(t * 2.1); s2.ctl.pull[7] = 0.35 + 0.3 * Math.sin(t * 1.6);
+			drive(s2, i * s2.dt);
 			s2.step();
-			if (i % 4) continue;
-			wrapFrame(s2.wrapProxies, s2.pos, s2.quat, frame);
-			let deepest = 0;
-			for (const st of s2.strings) {
-				if (!st.path || st.tension <= 0) continue;                       // only taut strings count
-				deepest = Math.max(deepest, pathPenetration(st.path.points, frame, st.excluded));
-				if (st.path.points.length > 2) wrapped++;
-			}
-			steps++; worst = Math.max(worst, deepest); if (deepest > 0.01) cut++;
+			if (i % 24) continue;
+			const m = stringsInsideWood(s2, model, { routed: opts.stringCollision });
+			samples++;
+			if (m.worst > 0.015) cut++;
+			if (m.worst > worst) { worst = m.worst; where = m.where; }
+			const o = s2.deepestOverlap();
+			if (o.depth > overlap) { overlap = o.depth; pair = o.pair.join(' / '); }
 		}
-		return { cut: cut / steps, worst, wrapped, resets: s2.resets - 1, joints: Math.max(...s2.joints.map((j) => M.dist(s2.pointAt(j.a, j.anchorA), s2.pointAt(j.b, j.anchorB)))) };
+		return { cut: cut / samples, worst, where, overlap, pair, resets: s2.resets - 1, joints: Math.max(...s2.joints.map((j) => M.dist(s2.pointAt(j.a, j.anchorA), s2.pointAt(j.b, j.anchorB)))) };
 	};
-	const off = scenario({ stringCollision: false });
-	const on = scenario({ stringCollision: true });
-	console.log(`  [string collisions] off: taut strings cut >1 cm into a limb ${(off.cut * 100).toFixed(1)}% of the time, deepest ${(off.worst * 100).toFixed(1)} cm`);
-	console.log(`  [string collisions]  on: ${(on.cut * 100).toFixed(1)}% of the time, deepest ${(on.worst * 100).toFixed(1)} cm, ${on.wrapped} wrapped samples`);
-	check('scenario really makes strings cross limbs', off.cut > 0.1, `${(off.cut * 100).toFixed(1)}% without collisions`);
-	check('strings wrap around limbs instead of cutting through', on.wrapped > 50 && on.cut < off.cut * 0.25, `${(on.cut * 100).toFixed(1)}% vs ${(off.cut * 100).toFixed(1)}%`);
-	check('wrapping stays stable', on.resets === 0 && on.joints < 0.05, `resets ${on.resets}, worst joint gap ${(on.joints * 1000).toFixed(1)} mm`);
+	const fold = (s2, t) => {
+		const q = M.qFromYPR(Math.sin(t * 0.9) * 1.6, 0.75 * Math.sin(t * 1.3), 0.7 * Math.sin(t * 1.1 + 1));
+		RIG.bars.forEach((b, k) => { s2.ctl.bars[k].pos = M.add(M.add(RIG.home, [0.25 * Math.sin(t * 0.7), -0.45 + 0.25 * Math.sin(t * 1.7), 0.2 * Math.cos(t * 0.8)]), M.qRot(q, b.offset)); s2.ctl.bars[k].quat = q; });
+		s2.ctl.pull[4] = 0.4 + 0.3 * Math.sin(t * 2.1); s2.ctl.pull[7] = 0.35 + 0.3 * Math.sin(t * 1.6);
+	};
+	const perform = (s2, t) => {
+		const q = M.qFromYPR(Math.sin(t * 1.1) * 0.9, Math.sin(t * 1.7) * 0.7, Math.cos(t * 1.3) * 0.7);
+		RIG.bars.forEach((b, k) => { s2.ctl.bars[k].pos = M.add(RIG.home, M.qRot(q, b.offset)); s2.ctl.bars[k].quat = q; });
+		s2.ctl.pull[4] = 0.3 + 0.3 * Math.sin(t * 2); s2.ctl.pull[5] = 0.3 + 0.3 * Math.cos(t * 1.6); s2.ctl.pull[6] = 0.2 + 0.2 * Math.sin(t * 2.4);
+	};
+	const pct = (v) => `${(v * 100).toFixed(1)}%`, mm = (v) => `${(v * 1000).toFixed(0)} mm`;
+	for (const [name, drive, limit] of [['performing (tilt, roll, pulls)', perform, 0.03], ['folded up under a low bar', fold, 0.1]]) {
+		const off = scenario({ stringCollision: false }, drive);
+		const on = scenario({ stringCollision: true }, drive);
+		console.log(`  [${name}] string inside the wood for more than 15 mm: ${pct(off.cut)} of the time without collisions (worst ${mm(off.worst)}), ${pct(on.cut)} with (worst ${mm(on.worst)}${on.where ? ', ' + on.where : ''})`);
+		check(`${name}: strings stay out of the wood`, on.cut <= limit && on.cut < off.cut * 0.3, `${pct(on.cut)} vs ${pct(off.cut)} without collisions`);
+		check(`${name}: limbs do not pass through each other`, on.overlap < 0.03, `deepest overlap ${mm(on.overlap)}${on.pair ? ' (' + on.pair + ')' : ''}`);
+		check(`${name}: stays stable`, on.resets === 0 && on.joints < 0.05, `resets ${on.resets}, worst joint gap ${mm(on.joints)}`);
+	}
 }
 
 // Timing.

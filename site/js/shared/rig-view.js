@@ -7,7 +7,7 @@ import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { BODIES, BARS, HANDLES, RIG_HOME } from './rig-config.js';
-import { buildWrapProxies, stringExclusions, wrapFrame, stringPath } from './string-path.js';
+import { buildWrapProxies, effectiveAttach, stringExclusions, wrapFrame, stringPath } from './string-path.js';
 
 const SEGMENTS = 14;
 const _a = new THREE.Vector3();
@@ -105,15 +105,15 @@ export class RigView {
 }
 
 /** Rest length of a string, computed exactly as the simulation does. */
-export function stringRestLength(def) {
+export function stringRestLength(def, at = def.at) {
 	if (Number.isFinite(def.length)) return def.length;
 	const h = HANDLES.find((x) => x.id === def.handle);
 	const body = BODIES.find((x) => x.id === def.body);
 	const bar = BARS.find((x) => x.id === h.bar);
 	return Math.hypot(
-		RIG_HOME[0] + bar.offset[0] + h.local[0] - body.pos[0] - def.at[0],
-		RIG_HOME[1] + bar.offset[1] + h.local[1] - body.pos[1] - def.at[1],
-		RIG_HOME[2] + bar.offset[2] + h.local[2] - body.pos[2] - def.at[2]
+		RIG_HOME[0] + bar.offset[0] + h.local[0] - body.pos[0] - at[0],
+		RIG_HOME[1] + bar.offset[1] + h.local[1] - body.pos[1] - at[1],
+		RIG_HOME[2] + bar.offset[2] + h.local[2] - body.pos[2] - at[2]
 	) + (def.slack || 0);
 }
 
@@ -148,6 +148,8 @@ export class StringsView {
 			const body = BODIES.findIndex((b) => b.id === def.body);
 			const handle = HANDLES.findIndex((h) => h.id === def.handle);
 			if (body < 0 || handle < 0) continue;
+			// Where the string is tied: on the surface of the wood, exactly as in the simulation.
+			const tie = effectiveAttach(def, BODIES, this.proxies);
 			const geometry = new LineGeometry();
 			geometry.setPositions(new Float32Array((SEGMENTS + 1) * 3));
 			const material = new LineMaterial({
@@ -160,11 +162,12 @@ export class StringsView {
 			let eye = null;
 			if (this.opts.eyeMaterial && this.opts.parts) {
 				eye = new THREE.Mesh(new THREE.TorusGeometry(0.011, 0.003, 6, 12), this.opts.eyeMaterial);
-				eye.position.set(def.at[0], def.at[1], def.at[2]);
+				eye.position.set(tie[0], tie[1], tie[2]);
+				eye.name = 'screw-eye';
 				eye.rotation.y = Math.PI / 2;
 				this.opts.parts[body].add(eye);
 			}
-			this.items.push({ def, body, handle, line, eye, rest: stringRestLength(def), excluded: stringExclusions(def, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null });
+			this.items.push({ def, body, handle, line, eye, tie, rest: stringRestLength(def, tie), excluded: stringExclusions(def, tie, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null });
 		}
 	}
 
@@ -182,7 +185,7 @@ export class StringsView {
 			line.visible = def.enabled !== false;
 			if (!line.visible) return;
 			_q.set(quat[body * 4], quat[body * 4 + 1], quat[body * 4 + 2], quat[body * 4 + 3]);
-			_a.set(def.at[0], def.at[1], def.at[2]).applyQuaternion(_q);
+			_a.set(item.tie[0], item.tie[1], item.tie[2]).applyQuaternion(_q);
 			_a.set(_a.x + pos[body * 3], _a.y + pos[body * 3 + 1], _a.z + pos[body * 3 + 2]);
 			_b.set(handlePos[handle * 3], handlePos[handle * 3 + 1], handlePos[handle * 3 + 2]);
 			item.attach.copy(_a); item.top.copy(_b);

@@ -256,7 +256,7 @@ async function boot() {
 	});
 
 	// Handy for the browser console and automated checks.
-	window.motionPuppet = { sim, controller, stage, slots, THREE };
+	window.motionPuppet = { sim, controller, stage, slots, puppet, strings, THREE };
 
 	stage.update(0.016, 0, { x: 0, y: 1.25, z: 0 });
 	stage.render(0.016);
