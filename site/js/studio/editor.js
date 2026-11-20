@@ -12,7 +12,7 @@ import { sanitizeStrings } from '../shared/modes.js';
 import { MODELS, DEFAULT_MODEL } from '../shared/puppet-shapes.js';
 import { MARIONETTE_PRESETS, DEFAULT_NAME, loadMarionette, parseMarionette, saveMarionette, isDefaultMarionette, marionetteDocument, rigForModel, presetOf } from '../shared/marionette.js';
 import { createWorld, bootError } from '../stage/world.js';
-import { createLinkMenu, linkAt, linkState, kindOf } from '../shared/link-menu.js';
+import { createLinkMenu, pickLink, tiePointOnScreen, linkState, kindOf } from '../shared/link-menu.js';
 import { OrbitCam, toScreen } from './orbit.js';
 import { el, toast, downloadJson, openJson, slider, typing, curtain } from './ui.js';
 
@@ -431,7 +431,7 @@ async function boot() {
 	// ------------------------------------------------------------- viewport
 	const tag = $('tag');
 	const _a = [0, 0, false];
-	const over = (e) => linkAt(e, world.strings, stage.camera, canvas);
+	const over = (e) => pickLink(e, world.strings, world.puppet.parts, stage.camera, canvas);
 
 	// Click a string or rod (or right-click it): it is selected, and a menu opens on it there.
 	const menu = createLinkMenu();
@@ -447,6 +447,7 @@ async function boot() {
 		menu.open({
 			title: s.label,
 			sub: `${handleOf(s.handle).label} handle → ${bodyLabel(s.body)}`,
+			anchor: () => (doc.strings[selected] && doc.strings[selected].id === menuId ? tiePointOnScreen(world.strings.items[selected], stage.camera, canvas) : null),
 			kind,
 			onKind: (k) => setKind(selected, k),
 			live: () => {
