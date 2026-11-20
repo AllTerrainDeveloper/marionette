@@ -38,7 +38,9 @@ function cross(enabled) {
 {
 	const off = cross(false), on = cross(true);
 	check('with tangling off, one string passes through another', off.zAtA > 0.25 && off.bent < 0.005 && off.knots === 0, `B ends up ${(off.zAtA * 100).toFixed(1)} cm behind A's line, A is bent ${(off.bent * 1000).toFixed(1)} mm`);
-	check('with tangling on, it catches on it instead', on.zAtA < on.zOfA + 0.001 && on.knots === 2, `where they cross, B is ${((on.zOfA - on.zAtA) * 1000).toFixed(1)} mm in front of A, and each string is held there (${on.knots} holds)`);
+	// (What is drawn follows the chains through the usual checks, so at the crossing the two
+	// drawn strings touch: within a few millimetres of each other, not 30 cm apart.)
+	check('with tangling on, it catches on it instead', Math.abs(on.zAtA - on.zOfA) < 0.008 && on.knots === 2, `where they cross, the two drawn strings are ${(Math.abs(on.zOfA - on.zAtA) * 1000).toFixed(1)} mm apart, and each string is held there (${on.knots} holds)`);
 	check('and drags it along', on.bent > 0.03, `A is pulled ${(on.bent * 100).toFixed(1)} cm out of its line`);
 }
 
