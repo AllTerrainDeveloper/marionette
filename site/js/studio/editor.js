@@ -10,9 +10,10 @@
 import { RIG, cloneStrings, restAttach, restHandle } from '../shared/rig-config.js';
 import { sanitizeStrings } from '../shared/modes.js';
 import { MODELS, DEFAULT_MODEL } from '../shared/puppet-shapes.js';
-import { MARIONETTE_PRESETS, DEFAULT_NAME, loadMarionette, parseMarionette, saveMarionette, marionetteDocument, rigForModel, presetOf } from '../shared/marionette.js';
+import { MARIONETTE_PRESETS, DEFAULT_NAME, loadMarionette, parseMarionette, saveMarionette, isDefaultMarionette, marionetteDocument, rigForModel, presetOf } from '../shared/marionette.js';
 import { createWorld, bootError } from '../stage/world.js';
-import { OrbitCam, toScreen, pointerAt, segmentDistance } from './orbit.js';
+import { createLinkMenu, linkAt, linkState, kindOf } from '../shared/link-menu.js';
+import { OrbitCam, toScreen } from './orbit.js';
 import { el, toast, downloadJson, openJson, slider, typing, curtain } from './ui.js';
 
 const $ = (id) => document.getElementById(id);
@@ -45,7 +46,6 @@ const SHORTCUTS = [
 	['/', 'Find a link'], ['1 – 4', 'Front, side, above, bars'], ['R', 'Reset the puppet'], ['Space', 'Slow motion'], ['?', 'This list'],
 ];
 
-const kindOf = (s) => (s.enabled === false ? 'off' : s.kind === 'rod' ? 'rod' : 'string');
 const KIND_LABEL = { string: 'String', rod: 'Rod', off: 'Off' };
 const bodyLabel = (id) => id.replace(/([a-z])([A-Z])$/, '$1 $2').replace(/ L$/, ', left').replace(/ R$/, ', right').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
 const handleOf = (id) => RIG.handles.find((h) => h.id === id);
@@ -151,9 +151,12 @@ async function boot() {
 	/** Restrings the puppet and saves. */
 	function apply() {
 		clearTimeout(applyTimer); applyTimer = 0;
-		doc.strings = sanitizeStrings(doc.strings, RIG);
+		// Cleaned in place where it can be, so whatever is holding a link (the panel, the menu) still holds the one in the table.
+		const clean = sanitizeStrings(doc.strings, RIG);
+		if (clean.length === doc.strings.length) doc.strings.forEach((s, i) => { for (const key of Object.keys(s)) delete s[key]; Object.assign(s, clean[i]); });
+		else doc.strings = clean;
 		world.setStrings(doc.strings);
-		const isDefault = doc.model === DEFAULT_MODEL && doc.name === DEFAULT_NAME && JSON.stringify(doc.strings) === JSON.stringify(sanitizeStrings(cloneStrings(), RIG));
+		const isDefault = isDefaultMarionette(doc);
 		savedOk = saveMarionette(isDefault ? null : marionetteDocument(doc.name, doc.strings, doc.model));
 		const now = snapshot();
 		if (now !== last) { undo.push(last); if (undo.length > 200) undo.shift(); redo.length = 0; last = now; }
@@ -185,6 +188,8 @@ async function boot() {
 		renderList();
 		renderDetail();
 		if (reveal) { const row = listEl.querySelector('.is-selected'); if (row) row.scrollIntoView({ block: 'nearest' }); }
+		// The menu on a link stays with that link, and goes when the link does.
+		if (menu.isOpen) { if (doc.strings[selected] && doc.strings[selected].id === menuId) showMenu(); else menu.close(); }
 	}
 
 	function setKind(index, kind) {
@@ -425,30 +430,55 @@ async function boot() {
 
 	// ------------------------------------------------------------- viewport
 	const tag = $('tag');
-	const _a = [0, 0, false], _b = [0, 0, false];
-	/** The link under the pointer: the nearest drawn string or rod within a few pixels. */
-	function linkAt(e) {
-		const p = pointerAt(e, canvas);
-		let best = -1, least = 9;
-		world.strings.items.forEach((item, i) => {
-			if (!item.points || !item.line.visible) return;
-			for (let k = 0; k < item.points.length - 1; k++) {
-				toScreen(item.points[k], stage.camera, canvas, _a); toScreen(item.points[k + 1], stage.camera, canvas, _b);
-				if (!_a[2] || !_b[2]) continue;
-				const d = segmentDistance(p, _a, _b);
-				if (d < least) { least = d; best = i; }
-			}
-		});
-		return best;
+	const _a = [0, 0, false];
+	const over = (e) => linkAt(e, world.strings, stage.camera, canvas);
+
+	// Click a string or rod (or right-click it): it is selected, and a menu opens on it there.
+	const menu = createLinkMenu();
+	let menuId = null;
+	function showMenu(at) {
+		const s = doc.strings[selected];
+		if (!s) { menu.close(); return; }
+		menuId = s.id;
+		const kind = kindOf(s);
+		const original = cloneStrings().find((d) => d.id === s.id);
+		const here = () => doc.strings.find((x) => x.id === menuId);
+		const number = (set) => (v) => { const now = here(); if (!now) return; set(now, v); changed(true); renderPresets(); renderDetail(); };
+		menu.open({
+			title: s.label,
+			sub: `${handleOf(s.handle).label} handle → ${bodyLabel(s.body)}`,
+			kind,
+			onKind: (k) => setKind(selected, k),
+			live: () => {
+				const live = sim.strings[selected];
+				if (kind === 'off') return { text: 'Taken off: it carries nothing.', state: 'off' };
+				return live && live.def.id === menuId ? linkState(live, sim.tension[selected]) : { text: '…' };
+			},
+			numbers: [
+				kind === 'string' && { label: 'Slack', unit: 'cm', value: s.slack, scale: 100, digits: 2, step: 0.005, min: -0.2, max: 0.6, title: 'Spare length at rest; below zero it is tight before anything moves', set: number((now, v) => { now.slack = v; }) },
+				kind !== 'off' && { label: kind === 'rod' ? 'Strength' : 'Gives at', unit: 'N', value: s.max, digits: 0, step: 10, min: 20, max: 600, title: 'The most it can carry before it gives', set: number((now, v) => { now.max = v; }) },
+			].filter(Boolean),
+			actions: [
+				{ label: 'Edit in the panel', title: 'Every setting of this link, in the panel', run: () => { const fold = detailEl.closest('details'); fold.open = true; fold.scrollIntoView({ block: 'start', behavior: 'smooth' }); } },
+				kind === 'string' && { label: 'Cut it', title: 'Cut this string now, to see what the puppet does without it. Reset ties it again.', run: () => { const live = sim.strings[selected]; if (live) live.broken = true; toast(`${s.label} cut · Reset ties it again`); } },
+				{ label: 'Duplicate', title: 'A second link like this one (⌘D)', run: duplicate },
+				(twin(s.body) || twin(s.handle)) && { label: 'Mirror', title: 'Make the link on the other side match this one (M)', run: mirror },
+				original && { label: 'As it came', title: 'Put this link back as the default marionette has it', run: () => { doc.strings[selected] = { ...original }; changed(true); renderPresets(); select(selected); return true; } },
+				{ label: 'Remove', title: 'Remove this link (Del)', danger: true, run: remove },
+			].filter(Boolean),
+		}, at);
 	}
+
 	let pressed = null;
 	canvas.addEventListener('pointerdown', (e) => { pressed = [e.clientX, e.clientY]; });
 	canvas.addEventListener('pointerup', (e) => {
 		if (!pressed || Math.hypot(e.clientX - pressed[0], e.clientY - pressed[1]) > 4) return;   // that was a drag of the camera
-		const hit = linkAt(e);
-		if (hit >= 0) select(hit, true);
+		const hit = over(e);
+		if (hit < 0) return;
+		select(hit, true);
+		showMenu([e.clientX, e.clientY]);
 	});
-	canvas.addEventListener('pointermove', (e) => { if (!e.buttons) canvas.classList.toggle('is-over', linkAt(e) >= 0); });
+	canvas.addEventListener('pointermove', (e) => { if (!e.buttons) canvas.classList.toggle('is-over', over(e) >= 0); });
 
 	/** A name tag half way along the selected link. */
 	function placeTag() {
@@ -542,10 +572,11 @@ async function boot() {
 	apply();
 	undo.length = 0;
 	renderPresets();
-	select(0);
+	// The stage sends a link here to be worked on: editor.html#link=<id>.
+	select(Math.max(0, doc.strings.findIndex((s) => s.id === new URLSearchParams(location.hash.slice(1)).get('link'))), true);
 	renderStatus();
 	// Handy for the browser console and automated checks.
-	window.motionPuppet = { ...world, world, doc, camera, select, setKind, setModel, usePreset: (id) => usePreset(MARIONETTE_PRESETS.find((p) => p.id === id)), setBench: (id) => setBench(BENCH.find((b) => b.id === id) || BENCH[0]) };
+	window.motionPuppet = { ...world, world, doc, camera, menu, select, setKind, setModel, usePreset: (id) => usePreset(MARIONETTE_PRESETS.find((p) => p.id === id)), setBench: (id) => setBench(BENCH.find((b) => b.id === id) || BENCH[0]) };
 	world.start();
 	veil.open();
 }

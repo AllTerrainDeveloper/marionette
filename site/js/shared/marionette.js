@@ -30,6 +30,12 @@ export function marionetteDocument(name, strings, model = DEFAULT_MODEL) {
 	return { version: MARIONETTE_VERSION, name: String(name || DEFAULT_NAME).slice(0, 40), model: modelById(model).id, strings };
 }
 
+/** Is this the marionette nothing need be saved for: the default puppet, name and twelve strings? */
+export function isDefaultMarionette(doc, rig = RIG) {
+	return modelById(doc.model).id === DEFAULT_MODEL && (doc.name || DEFAULT_NAME) === DEFAULT_NAME
+		&& JSON.stringify(sanitizeStrings(doc.strings, rig)) === JSON.stringify(sanitizeStrings(cloneStrings(), rig));
+}
+
 /** Saves the marionette; `null` forgets it (back to the gentleman on his twelve strings). False if the browser refused. */
 export function saveMarionette(doc) {
 	try {

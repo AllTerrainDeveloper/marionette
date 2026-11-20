@@ -78,7 +78,7 @@ btnStart.addEventListener('click', async () => {
 		await link.join(code);
 	} catch (err) {
 		introStatus.classList.add('is-error');
-		introStatus.textContent = err && err.code ? err.message : 'Could not reach the stage. Check that it is still open, then try again.';
+		introStatus.textContent = err && err.code ? err.message : 'Could not reach the stage. Put this phone on the same Wi‑Fi as the stage’s screen (mobile data usually will not connect), check the stage is still open, then try again.';
 		btnStart.disabled = err && (err.code === 'expired' || err.code === 'taken');
 		btnStart.textContent = btnStart.disabled ? 'Scan a fresh code' : 'Try again';
 		return;

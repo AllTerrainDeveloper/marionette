@@ -237,6 +237,8 @@ export class StringsView {
 					mat.color.copy(_c);
 					mat.opacity = 1;
 					mat.linewidth = (this.opts.width || 2) * ROD_WIDTH * (isSelected ? 1.7 : 1);
+				} else {
+					mat.linewidth = (this.opts.width || 1.4) * ROD_WIDTH * (isSelected ? 1.7 : 1);
 				}
 				return;
 			}
@@ -269,7 +271,8 @@ export class StringsView {
 				mat.opacity = t < 0.004 && !isSelected ? 0.55 : 1;
 				mat.linewidth = (this.opts.width || 2) * (isSelected ? 2.1 : 1 + t * 0.9);
 			} else {
-				mat.opacity = broken ? 0.4 : 0.9;
+				mat.opacity = broken ? 0.4 : isSelected ? 1 : 0.9;
+				mat.linewidth = (this.opts.width || 1.4) * (isSelected ? 2.4 : 1);
 			}
 		});
 		// Strings catching on each other, if that is switched on: the chains are kept from passing

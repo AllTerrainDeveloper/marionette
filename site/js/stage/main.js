@@ -7,7 +7,10 @@ import { RIG } from '../shared/rig-config.js';
 import { MODES } from '../shared/modes.js';
 import { encodeState, decodeInput, seqNewer, PROTOCOL_VERSION } from '../shared/protocol.js';
 import { HostLink } from '../shared/net.js';
-import { marionetteRig } from '../shared/marionette.js';
+import { cloneStrings } from '../shared/rig-config.js';
+import { sanitizeStrings } from '../shared/modes.js';
+import { marionetteRig, loadMarionette, saveMarionette, marionetteDocument, isDefaultMarionette, DEFAULT_NAME } from '../shared/marionette.js';
+import { createLinkMenu, linkAt, linkState, kindOf } from '../shared/link-menu.js';
 import { createWorld, bootError } from './world.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -86,7 +89,7 @@ async function boot() {
 		pairing.classList.toggle('is-live', n > 0 && !slots.some((s) => s.el.classList.contains('is-featured')));
 		modeLabel.textContent = n ? controller.mode.title : 'Waiting in the wings';
 		phonesLabel.textContent = n === 0
-			? 'No puppeteer yet — the puppet is rehearsing on its own'
+			? 'No puppeteer yet — the puppet is rehearsing on its own · click a string to work on it'
 			: n === 1 ? 'One puppeteer on the strings' : 'Pro: two puppeteers, one on each bar';
 	}
 
@@ -154,6 +157,7 @@ async function boot() {
 		};
 		link.onopen = () => {
 			controller.connect(s.slot);
+			releaseLink();   // the strings are the puppeteer's now
 			s.seq = -1; s.got = false;
 			s.el.classList.add('is-paired');
 			s.state.textContent = 'Connected';
@@ -211,6 +215,79 @@ async function boot() {
 	}
 	refreshHud();
 
+	// ------------------------------------------------- a menu on each link
+	// While no phone holds the strings, a click on a string or rod opens a menu on it: what it
+	// is carrying, string / rod / off, its slack and strength, cut it. What is changed is saved
+	// to the marionette, as the editor would save it.
+	const canvas = $('#stage');
+	const menu = createLinkMenu();
+	const bodyLabel = (id) => id.replace(/([a-z])([LR])$/, (_, a, side) => `${a}, ${side === 'L' ? 'left' : 'right'}`).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+	const free = () => controller.phones === 0;
+	function releaseLink() {
+		menu.close();
+		canvas.classList.remove('is-over');
+	}
+	/** Restrings the puppet with the table as changed, and saves it. */
+	function restring(change, said) {
+		const saved = loadMarionette();
+		const strings = sanitizeStrings(world.rig.strings, RIG);
+		change(strings);
+		world.setStrings(sanitizeStrings(strings, RIG));
+		const doc = { name: saved ? saved.name : DEFAULT_NAME, model: puppet.model, strings: world.rig.strings };
+		const kept = saveMarionette(isDefaultMarionette(doc) ? null : marionetteDocument(doc.name, doc.strings, doc.model));
+		if (said) toast(kept ? `${said} · saved to your marionette` : `${said} · this browser would not save it`);
+	}
+	function showLinkMenu(index, at) {
+		const s = world.rig.strings[index];
+		if (!s || !free()) { menu.close(); return; }
+		world.selected = new Set([index]);
+		const kind = kindOf(s);
+		const original = cloneStrings().find((d) => d.id === s.id);
+		const handle = RIG.handles.find((h) => h.id === s.handle);
+		const number = (set) => (v) => restring((table) => { if (table[index]) set(table[index], v); });
+		menu.open({
+			title: s.label,
+			sub: `${handle ? handle.label : s.handle} handle → ${bodyLabel(s.body)}`,
+			kind,
+			onKind: (k) => {
+				restring((table) => {
+					const link = table[index];
+					link.enabled = k !== 'off';
+					if (k === 'rod') { link.kind = 'rod'; link.breakable = false; } else if (k === 'string') delete link.kind;
+				}, `${s.label}: ${{ string: 'a string', rod: 'a rod', off: 'taken off' }[k]}`);
+				showLinkMenu(index);
+			},
+			live: () => {
+				const live = sim.strings[index];
+				if (kind === 'off') return { text: 'Taken off: it carries nothing.', state: 'off' };
+				return live && live.def.id === s.id ? linkState(live, sim.tension[index]) : { text: '…' };
+			},
+			numbers: [
+				kind === 'string' && { label: 'Slack', unit: 'cm', value: s.slack, scale: 100, digits: 2, step: 0.005, min: -0.2, max: 0.6, title: 'Spare length at rest; below zero it is tight before anything moves', set: number((link, v) => { link.slack = v; }) },
+				kind !== 'off' && { label: kind === 'rod' ? 'Strength' : 'Gives at', unit: 'N', value: s.max, digits: 0, step: 10, min: 20, max: 600, title: 'The most it can carry before it gives', set: number((link, v) => { link.max = v; }) },
+			].filter(Boolean),
+			actions: [
+				kind === 'string' && { label: 'Cut it', title: 'Cut this string now. Reset ties it again.', run: () => { const live = sim.strings[index]; if (live) live.broken = true; toast(`${s.label} cut · Reset ties it again`); } },
+				original && { label: 'As it came', title: 'Put this link back as the default marionette has it', run: () => { restring((table) => { table[index] = original; }, `${s.label} is as it came`); showLinkMenu(index); return true; } },
+				{ label: 'Open in the editor', title: 'Every setting of this link, in the Marionette editor', run: () => { location.href = `editor.html#link=${encodeURIComponent(s.id)}`; } },
+			].filter(Boolean),
+			note: 'Here while no phone holds the strings.',
+			onClose: () => { world.selected = null; },
+		}, at);
+	}
+	{
+		const over = (e) => (free() ? linkAt(e, strings, stage.camera, canvas) : -1);
+		let pressed = null;
+		canvas.addEventListener('pointerdown', (e) => { pressed = [e.clientX, e.clientY]; });
+		canvas.addEventListener('pointerup', (e) => {
+			if (!pressed || Math.hypot(e.clientX - pressed[0], e.clientY - pressed[1]) > 4) return;
+			const hit = over(e);
+			if (hit >= 0) showLinkMenu(hit, [e.clientX, e.clientY]);
+		});
+		canvas.addEventListener('pointermove', (e) => { if (!e.buttons) canvas.classList.toggle('is-over', over(e) >= 0); });
+		canvas.addEventListener('contextmenu', (e) => { if (over(e) >= 0) e.preventDefault(); });
+	}
+
 	// ----------------------------------------------------------- snapshots
 	let seq = 0;
 	function sendSnapshots() {
@@ -245,7 +322,7 @@ async function boot() {
 	});
 
 	// Handy for the browser console and automated checks.
-	window.motionPuppet = { sim, controller, stage, slots, puppet, strings, tuning, THREE };
+	window.motionPuppet = { world, sim, controller, stage, slots, puppet, strings, tuning, THREE, menu, showLinkMenu };
 
 	// Debug mode: add ?debug (or ?debug=<routine>) to the stage URL for predefined movement
 	// routines that play the puppet without a phone. Loaded only when asked for.
