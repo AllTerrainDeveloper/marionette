@@ -34,7 +34,7 @@ export function createOrbitStick(stage, THREE) {
 	const knob = make('i');
 	const pad = make('div.orbit__pad', { role: 'slider', tabindex: '0', 'aria-label': 'Camera: push to go round the puppet, arrow keys work too', 'aria-valuetext': 'centred', title: 'Hold and push to move the camera round the puppet · double-click to put the view back' }, knob);
 	const home = make('button.orbit__home', { type: 'button', text: '⟲', title: 'Put the view back (0)', 'aria-label': 'Put the view back', hidden: '' });
-	const node = make('div.orbit', { 'aria-label': 'Camera' },
+	const node = make('div.orbit', { 'aria-label': 'Camera', 'data-keeps-linkmenu': '' },
 		pad,
 		make('div.orbit__zoom', {},
 			make('button', { type: 'button', text: '+', title: 'Closer', 'aria-label': 'Camera closer', onclick: () => { want.zoom = clamp(want.zoom / 1.18, ...ZOOM); } }),

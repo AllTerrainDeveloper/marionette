@@ -2,6 +2,7 @@
 // carrying, and the things that can be done to it there and then. The Marionette editor and
 // the stage (while no phone holds the strings) both open it; each says what goes in it.
 
+import * as THREE from 'three';
 import { toScreen, pointerAt, segmentDistance } from '../studio/orbit.js';
 
 const _a = [0, 0, false], _b = [0, 0, false];
@@ -20,6 +21,49 @@ export function linkAt(e, strings, camera, canvas, reach = 9) {
 		}
 	});
 	return best;
+}
+
+const _ray = new THREE.Raycaster(), _ndc = new THREE.Vector2();
+
+/**
+ * The link for the part of the puppet under the pointer: a click on a limb is a click on the
+ * string or rod tied to it (the one tied nearest where it was touched, if it has several).
+ * -1 when the pointer is on no part, or on a part with nothing tied to it.
+ */
+export function linkOnLimbAt(e, strings, parts, camera, canvas) {
+	const p = pointerAt(e, canvas);
+	_ndc.set((p[0] / canvas.clientWidth) * 2 - 1, -(p[1] / canvas.clientHeight) * 2 + 1);
+	_ray.setFromCamera(_ndc, camera);
+	const hit = _ray.intersectObjects(parts, true)[0];
+	if (!hit) return -1;
+	let node = hit.object;
+	while (node && !parts.includes(node)) node = node.parent;
+	const body = parts.indexOf(node);
+	let best = -1, least = Infinity;
+	strings.items.forEach((item, i) => {
+		if (item.body !== body || !item.line.visible) return;
+		const d = item.attach.distanceToSquared(hit.point);
+		if (d < least) { least = d; best = i; }
+	});
+	return best;
+}
+
+/** The link under the pointer: on its string or rod, or on the limb it is tied to. */
+export function pickLink(e, strings, parts, camera, canvas) {
+	// Strings hang in front of the puppet: only one the pointer is squarely on is taken before the limb behind it.
+	const exact = linkAt(e, strings, camera, canvas, 3.5);
+	if (exact >= 0) return exact;
+	const limb = linkOnLimbAt(e, strings, parts, camera, canvas);
+	return limb >= 0 ? limb : linkAt(e, strings, camera, canvas);
+}
+
+/** Where a link is tied to the puppet, in window pixels (null when it is behind the camera or not drawn). */
+export function tiePointOnScreen(item, camera, canvas) {
+	if (!item || !item.line.visible) return null;
+	toScreen(item.attach, camera, canvas, _a);
+	if (!_a[2]) return null;
+	const r = canvas.getBoundingClientRect();
+	return [r.left + _a[0], r.top + _a[1]];
 }
 
 export const kindOf = (s) => (s.enabled === false ? 'off' : s.kind === 'rod' ? 'rod' : 'string');
@@ -88,12 +132,49 @@ function range({ label, unit = '', value, scale = 1, digits = 0, step, min, max,
  *   numbers             [{ label, unit, value, scale, digits, step, min, max, title, set(value) }]
  *   actions             [{ label, title, danger, wide, run() }]   (the menu closes unless run() returns true)
  *   note                a line of small print
- * It closes on Escape, on a press anywhere else, and when `close()` is called.
+ *   anchor()            → [x, y] in the window: what the menu is about. A curved arrow runs from the menu to it.
+ * The menu can be dragged by its head to wherever it is out of the way; it stays there while it is open.
+ * It closes on Escape, on a click anywhere else (not a drag, and not on a camera control), and when `close()` is called.
  */
 export function createLinkMenu() {
 	const node = make('div.linkmenu', { role: 'dialog', 'aria-label': 'This link', hidden: '' });
 	document.body.append(node);
-	let place = [0, 0], live = null, liveEl = null, timer = 0, onClose = null;
+	// The arrow from the menu to what it is about: drawn over the page, in nobody's way.
+	const NS = 'http://www.w3.org/2000/svg';
+	const svg = (tag, attrs) => { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); return n; };
+	const glow = svg('path', { class: 'linkarrow__glow' }), curve = svg('path', { class: 'linkarrow__curve' }), head = svg('path', { class: 'linkarrow__head' });
+	const ring = svg('circle', { class: 'linkarrow__ring', r: 9 }), dot = svg('circle', { class: 'linkarrow__dot', r: 3 });
+	const arrow = svg('svg', { class: 'linkarrow', 'aria-hidden': 'true' });
+	arrow.append(glow, curve, head, ring, dot);
+	arrow.style.display = 'none';
+	document.body.append(arrow);
+
+	let place = [0, 0], pinned = null, live = null, liveEl = null, timer = 0, onClose = null, anchor = null, raf = 0;
+
+	/** A curve from the side of the menu nearest the thing, bowing out, to an arrowhead just short of it. */
+	function drawArrow() {
+		raf = node.hidden ? 0 : requestAnimationFrame(drawArrow);
+		const to = !node.hidden && anchor && anchor();
+		const r = node.getBoundingClientRect();
+		const inside = to && to[0] > r.left - 6 && to[0] < r.right + 6 && to[1] > r.top - 6 && to[1] < r.bottom + 6;
+		if (!to || inside) { arrow.style.display = 'none'; return; }
+		arrow.style.display = '';
+		const from = [Math.max(r.left, Math.min(r.right, to[0])), Math.max(r.top, Math.min(r.bottom, to[1]))];
+		// Leave from the middle of the nearest side rather than a corner, where there is a side to leave from.
+		if (to[0] < r.left || to[0] > r.right) from[1] = Math.max(r.top + 16, Math.min(r.bottom - 16, r.top + r.height / 2 + (to[1] - (r.top + r.height / 2)) * 0.25));
+		else from[0] = Math.max(r.left + 16, Math.min(r.right - 16, r.left + r.width / 2 + (to[0] - (r.left + r.width / 2)) * 0.25));
+		const dx = to[0] - from[0], dy = to[1] - from[1], length = Math.hypot(dx, dy) || 1;
+		const bow = Math.min(70, length * 0.28) * (dx * dy > 0 ? -1 : 1);
+		const c = [from[0] + dx / 2 - (dy / length) * bow, from[1] + dy / 2 + (dx / length) * bow];
+		// The arrowhead points along the curve's last stretch and stops at the ring.
+		let ux = to[0] - c[0], uy = to[1] - c[1];
+		const ul = Math.hypot(ux, uy) || 1; ux /= ul; uy /= ul;
+		const tip = [to[0] - ux * 12, to[1] - uy * 12], back = [tip[0] - ux * 11, tip[1] - uy * 11];
+		const d = `M${from[0].toFixed(1)} ${from[1].toFixed(1)} Q${c[0].toFixed(1)} ${c[1].toFixed(1)} ${back[0].toFixed(1)} ${back[1].toFixed(1)}`;
+		curve.setAttribute('d', d); glow.setAttribute('d', d);
+		head.setAttribute('d', `M${tip[0].toFixed(1)} ${tip[1].toFixed(1)} L${(back[0] - uy * 6).toFixed(1)} ${(back[1] + ux * 6).toFixed(1)} L${(back[0] + ux * 3).toFixed(1)} ${(back[1] + uy * 3).toFixed(1)} L${(back[0] + uy * 6).toFixed(1)} ${(back[1] - ux * 6).toFixed(1)} Z`);
+		for (const n of [ring, dot]) { n.setAttribute('cx', to[0].toFixed(1)); n.setAttribute('cy', to[1].toFixed(1)); }
+	}
 
 	function tick() {
 		const now = live && live();
@@ -105,19 +186,22 @@ export function createLinkMenu() {
 		if (node.hidden) return;
 		node.hidden = true;
 		clearInterval(timer);
-		live = null;
+		cancelAnimationFrame(raf); raf = 0;
+		arrow.style.display = 'none';
+		live = null; anchor = null; pinned = null;
 		const done = onClose; onClose = null;
 		if (done) done();
 	}
 	function open(spec, at) {
-		if (at) place = at;
+		if (at) { place = at; pinned = null; }
+		anchor = spec.anchor || null;
 		const fresh = node.hidden || !!at;
 		clearInterval(timer);
 		live = spec.live || null;
 		onClose = spec.onClose || null;
 		liveEl = live ? make('p.linkmenu__live') : null;
 		node.replaceChildren(...[
-			make('header', {},
+			make('header', { title: 'Drag to move this menu' },
 				make('div', {}, make('b', { text: spec.title }), make('small', { text: spec.sub })),
 				make('button.linkmenu__x', { type: 'button', text: '×', 'aria-label': 'Close', onclick: close })),
 			liveEl,
@@ -134,15 +218,47 @@ export function createLinkMenu() {
 		node.hidden = false;
 		// Beside the pointer, and wholly on the page.
 		const w = node.offsetWidth, h = node.offsetHeight;
-		const x = place[0] + 14 + w > innerWidth - 8 ? place[0] - 14 - w : place[0] + 14;
-		node.style.left = `${Math.max(8, x)}px`;
-		node.style.top = `${Math.max(8, Math.min(innerHeight - h - 8, place[1] - 18))}px`;
+		// Off to one side of what was clicked, so the arrow has room and the thing itself stays in sight; where it was dragged to, once it has been.
+		const x = pinned ? pinned[0] : place[0] + 56 + w > innerWidth - 8 ? place[0] - 56 - w : place[0] + 56;
+		const y = pinned ? pinned[1] : place[1] - 40;
+		node.style.left = `${Math.max(8, Math.min(innerWidth - w - 8, x))}px`;
+		node.style.top = `${Math.max(8, Math.min(innerHeight - h - 8, y))}px`;
+		if (!raf) drawArrow();
 		if (fresh) { node.classList.remove('is-in'); requestAnimationFrame(() => node.classList.add('is-in')); }
 		tick();
 		if (live) timer = setInterval(tick, 160);
 	}
 
-	document.addEventListener('pointerdown', (e) => { if (!node.hidden && !node.contains(e.target)) close(); }, true);
+	// Dragged by its head to wherever it is out of the way.
+	let grab = null;
+	node.addEventListener('pointerdown', (e) => {
+		if (e.button !== 0 || !e.target.closest('header') || e.target.closest('button')) return;
+		const r = node.getBoundingClientRect();
+		grab = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top };
+		try { node.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
+		node.classList.add('is-dragged');
+		e.preventDefault();
+	});
+	node.addEventListener('pointermove', (e) => {
+		if (!grab || e.pointerId !== grab.id) return;
+		pinned = [Math.max(8, Math.min(innerWidth - node.offsetWidth - 8, e.clientX - grab.dx)), Math.max(8, Math.min(innerHeight - node.offsetHeight - 8, e.clientY - grab.dy))];
+		node.style.left = `${pinned[0]}px`; node.style.top = `${pinned[1]}px`;
+	});
+	const drop = () => { grab = null; node.classList.remove('is-dragged'); };
+	node.addEventListener('pointerup', drop);
+	node.addEventListener('pointercancel', drop);
+
+	// A click anywhere else closes it. Moving the camera does not: neither a drag (which is how a
+	// viewport is looked round) nor anything inside an element marked data-keeps-linkmenu (the
+	// stage's thumbstick, the editor's view buttons).
+	let away = null;
+	document.addEventListener('pointerdown', (e) => {
+		away = node.hidden || node.contains(e.target) || e.target.closest('[data-keeps-linkmenu]') ? null : [e.clientX, e.clientY];
+	}, true);
+	document.addEventListener('pointerup', (e) => {
+		const from = away; away = null;
+		if (from && !node.hidden && Math.hypot(e.clientX - from[0], e.clientY - from[1]) <= 4) close();
+	}, true);
 	window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !node.hidden) { e.stopPropagation(); close(); } }, true);
 	window.addEventListener('resize', close);
 

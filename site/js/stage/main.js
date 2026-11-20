@@ -8,7 +8,7 @@ import { MODES } from '../shared/modes.js';
 import { encodeState, decodeInput, seqNewer, PROTOCOL_VERSION } from '../shared/protocol.js';
 import { HostLink } from '../shared/net.js';
 import { marionetteRig } from '../shared/marionette.js';
-import { createLinkMenu, linkAt, linkState } from '../shared/link-menu.js';
+import { createLinkMenu, pickLink, tiePointOnScreen, linkState } from '../shared/link-menu.js';
 import { dragPoint } from '../studio/orbit.js';
 import { createOrbitStick } from './orbit-stick.js';
 import { createWorld, bootError } from './world.js';
@@ -89,7 +89,7 @@ async function boot() {
 		pairing.classList.toggle('is-live', n > 0 && !slots.some((s) => s.el.classList.contains('is-featured')));
 		modeLabel.textContent = n ? controller.mode.title : 'Waiting in the wings';
 		phonesLabel.textContent = n === 0
-			? 'No puppeteer yet — the puppet is rehearsing on its own · drag a string to move it, or click it'
+			? 'No puppeteer yet — the puppet is rehearsing on its own · drag a string or a limb to move it, or click it'
 			: n === 1 ? 'One puppeteer on the strings' : 'Pro: two puppeteers, one on each bar';
 	}
 
@@ -290,6 +290,7 @@ async function boot() {
 		menu.open({
 			title: s.label,
 			sub: `${handle ? handle.label : s.handle} handle → ${bodyLabel(s.body)}`,
+			anchor: () => (free() ? tiePointOnScreen(strings.items[index], stage.camera, canvas) : null),
 			live: () => { const live = sim.strings[index]; return live && live.def.id === s.id ? linkState(live, sim.tension[index]) : { text: '…' }; },
 			ranges: [
 				move('Lift', 1, 'Raise the handle, or lower it past where it hangs.'),
@@ -306,12 +307,12 @@ async function boot() {
 				others && { label: 'Let go of all', title: 'Every handle back where it hangs', run: () => { letGoAll(); showLinkMenu(index); return true; } },
 				{ label: 'Change it in the editor', wide: true, title: 'String or rod, its slack, where it is tied: the Marionette editor', run: () => { location.href = `editor.html#link=${encodeURIComponent(s.id)}`; } },
 			].filter(Boolean),
-			note: 'Or drag the string itself. Here while no phone holds the strings.',
+			note: 'Or drag the string or its limb. Here while no phone holds the strings.',
 			onClose: () => { world.selected = null; },
 		}, at);
 	}
 	{
-		const over = (e) => (free() ? linkAt(e, strings, stage.camera, canvas) : -1);
+		const over = (e) => (free() ? pickLink(e, strings, puppet.parts, stage.camera, canvas) : -1);
 		const grip = new THREE.Vector3(), from = new THREE.Vector3(), to = new THREE.Vector3();
 		let press = null;
 		canvas.addEventListener('pointerdown', (e) => {
@@ -330,6 +331,7 @@ async function boot() {
 			if (!press || !e.buttons) { canvas.classList.toggle('is-over', over(e) >= 0); return; }
 			if (press.index < 0 || !press.ok || !free()) return;
 			if (!press.moved && Math.hypot(e.clientX - press.x, e.clientY - press.y) <= 4) return;
+			if (!press.moved) menu.close();   // the menu was about another moment
 			press.moved = true;
 			canvas.classList.add('is-dragging');
 			world.selected = new Set([press.index]);
