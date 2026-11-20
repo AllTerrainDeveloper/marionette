@@ -44,6 +44,7 @@ const SWEEP_REACH = 0.04;          // pieces within this (m) of a point caught i
 const TURN_REACH = 0.25;           // how far from the tie (m, along the string) slack still goes round with the limb
 const TURN_SLACK = 0.05;           // spare length (m) from which it does so fully
 const HEAL_DEPTH = -0.0005;        // how far into its own limb (m, negative) the end of a string may cut before it is laid round it ...
+const STAY_DEPTH = -0.0015;          // ... and how far in (m, negative) a stretch may be and still be allowed to stay as it is on the limb
 const HEAL_REACH = 0.06;           // ... and the furthest sideways (m) that may move a point; beyond it the easing has to do
 const STEADY = 0.0199;              // sideways movement per frame (m) that needs no run-up ...
 const SWING_SLOP = 0.00005;         // rounding allowed when movement is compared with what the limiter allows (m)
@@ -90,6 +91,7 @@ export class StringShape {
 		this.ref = new Float32Array(size);      // what was drawn last time, carried along with the two ends
 		this.swing = 0;                         // how far the drawn string moved sideways last time (m)
 		this.rode = 0;                          // how often its end has had to go round with a jolted limb (see update)
+		this.forced = 0;                        // ... and how often points had to be put out of the limb outright
 		this.rigid = new Float32Array(size);    // the end of what was drawn last time, carried round with the limb it is tied to
 		this.rigidFrom = links;                 // ... from this point on
 	}
@@ -545,8 +547,11 @@ export class StringShape {
 				for (let widen = 0; widen <= this.tie && !done; widen++) {
 					const from = Math.max(this.rigidFrom, c0 - widen), to = Math.min(n - 1, c1 + widen);
 					for (let k = from * 3; k < (to + 1) * 3; k++) out[k] = rigid[k];
+					// (Judged a little more leniently than what set this off: a stretch that was already
+					// a few millimetres into the wood stays exactly that deep when it rides with the limb,
+					// and turning it down for that would leave the limb free to move right through it.)
 					let clear = true;
-					for (let k = first; k < n && clear; k++) clear = !this._cuts(out, k, own);
+					for (let k = first; k < n && clear; k++) clear = !this._cuts(out, k, own, STAY_DEPTH);
 					if (clear) {
 						const stayed = this._swing();
 						if (stayed <= most + SWING_SLOP) { swing = stayed; done = true; }
@@ -556,6 +561,25 @@ export class StringShape {
 					if (from === this.rigidFrom && to === n - 1) break;
 				}
 				if (!done && ridden >= 0) { out.set(_there.subarray(0, out.length)); swing = riddenSwing; this.rode++; }
+				// And if even that is not to be had, every point of the end of the string that is in
+				// the limb is simply put out of it by the nearest way. Nothing drawn stays in there.
+				if (!done && ridden < 0) {
+					let any = false;
+					for (let k = Math.max(1, first); k < n; k++) {
+						_point[0] = out[k * 3]; _point[1] = out[k * 3 + 1]; _point[2] = out[k * 3 + 2];
+						if (isClear(own, _point, null, STAY_DEPTH)) continue;
+						for (let round = 0; round < 3; round++) {
+							const clear = exit(own, _point, DRAWN_MARGIN);
+							if (clear === _point) break;
+							_point[0] = clear[0]; _point[1] = clear[1]; _point[2] = clear[2];
+						}
+						out[k * 3] = _point[0]; out[k * 3 + 1] = _point[1]; out[k * 3 + 2] = _point[2];
+						any = true;
+					}
+					// (... nor a link between two such points: those go round the limb by the router's way.)
+					if (this._heal(out, null, DRAWN_MARGIN, Infinity)) any = true;
+					if (any) { swing = this._swing(); this.rode++; this.forced++; }
+				}
 			}
 		}
 		// The same for any other limb, anywhere along the string: a stretch the limiter has left
@@ -702,12 +726,12 @@ export class StringShape {
 	}
 
 	/** Whether link `k` of `points` cuts through one of `wood` (four places along it). */
-	_cuts(points, k, wood) {
+	_cuts(points, k, wood, depth = HEAL_DEPTH) {
 		const o = k * 3;
 		for (let part = k === 0 ? 1 : 0; part <= 3; part++) {
 			const u = part / 4;
 			_point[0] = points[o] + (points[o + 3] - points[o]) * u; _point[1] = points[o + 1] + (points[o + 4] - points[o + 1]) * u; _point[2] = points[o + 2] + (points[o + 5] - points[o + 2]) * u;
-			if (!isClear(wood, _point, null, HEAL_DEPTH)) return true;
+			if (!isClear(wood, _point, null, depth)) return true;
 		}
 		return false;
 	}

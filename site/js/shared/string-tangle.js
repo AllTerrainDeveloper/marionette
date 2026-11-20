@@ -188,7 +188,7 @@ export class Tangles {
 				const pressB = -(bb[0] * _n[0] + bb[1] * _n[1] + bb[2] * _n[2]);     // B pulled towards A
 				if (pressA > PRESS && pressB > PRESS && sa.tension > TENSION && sb.tension > TENSION) {
 					const strength = Math.min(pressA * sa.tension, pressB * sb.tension);
-					if (!best || strength > best.strength) best = { strength, i, j, at: [(pax + pbx) / 2, (pay + pby) / 2, (paz + pbz) / 2], ba: [ba[0], ba[1], ba[2]], bb: [bb[0], bb[1], bb[2]] };
+					if (!best || strength > best.strength) best = { strength, i, j, at: [(pax + pbx) / 2, (pay + pby) / 2, (paz + pbz) / 2], normal: [_n[0], _n[1], _n[2]], ba: [ba[0], ba[1], ba[2]], bb: [bb[0], bb[1], bb[2]] };
 				}
 			}
 		}
@@ -205,8 +205,10 @@ export class Tangles {
 				if (this._free(sb.shape, best.j)) this._shift(sb.shape, best.j, fx, fy, fz);
 				best.at[0] += fx; best.at[1] += fy; best.at[2] += fz;
 			}
-			this.knots[a].push({ at: best.at, with: b });
-			this.knots[b].push({ at: best.at, with: a });
+			// Each string goes through the crossing on its own side of it, half the gap from the middle.
+			const h = GAP / 2, m = best.at, v = best.normal;
+			this.knots[a].push({ at: [m[0] - v[0] * h, m[1] - v[1] * h, m[2] - v[2] * h], with: b });
+			this.knots[b].push({ at: [m[0] + v[0] * h, m[1] + v[1] * h, m[2] + v[2] * h], with: a });
 		}
 		return touching;
 	}
@@ -214,14 +216,17 @@ export class Tangles {
 	/** Whether link k of a chain can be moved: not if one of its ends is the handle or the tie. */
 	_free(shape, k) { return k >= 1 && k + 1 <= shape.n - 1; }
 
-	/** Moves both ends of link k of a chain, in the chain and in what is drawn of it. */
+	/**
+	 * Moves both ends of link k of a chain. Only the chain: what is drawn follows it on the
+	 * next update, through the same checks as any other movement (no leaps, nothing drawn
+	 * inside a limb), so two strings may be drawn through each other for a frame.
+	 */
 	_shift(shape, k, dx, dy, dz) {
-		const { p, last, out } = shape;
+		const { p, last } = shape;
 		for (let e = k; e <= k + 1; e++) {
 			const o = e * 3;
 			p[o] += dx; p[o + 1] += dy; p[o + 2] += dz;
 			last[o] = p[o]; last[o + 1] = p[o + 1]; last[o + 2] = p[o + 2];
-			out[o] += dx; out[o + 1] += dy; out[o + 2] += dz;
 		}
 		shape.asleep = false;
 		shape.still = 0;
