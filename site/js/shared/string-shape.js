@@ -44,6 +44,7 @@ const SWEEP_REACH = 0.04;          // pieces within this (m) of a point caught i
 const TURN_REACH = 0.25;           // how far from the tie (m, along the string) slack still goes round with the limb
 const TURN_SLACK = 0.05;           // spare length (m) from which it does so fully
 const HEAL_DEPTH = -0.0005;        // how far into its own limb (m, negative) the end of a string may cut before it is laid round it ...
+const OWN_EASE = 0.002;             // how far a drawn point in the string's own limb is eased towards the way out per frame (m)
 const STAY_DEPTH = -0.0015;          // ... and how far in (m, negative) a stretch may be and still be allowed to stay as it is on the limb
 const HEAL_REACH = 0.06;           // ... and the furthest sideways (m) that may move a point; beyond it the easing has to do
 const STEADY = 0.0199;              // sideways movement per frame (m) that needs no run-up ...
@@ -493,6 +494,54 @@ export class StringShape {
 		}
 		// What is drawn may trail the chain by a frame or two, but not through the limb the
 		// string is tied to.
+		// The end of what is drawn is never left sitting in the limb it is tied to, not even by a
+		// millimetre or two: each point there that is in the wood is eased towards the way out,
+		// a little each frame (too little to be a movement anyone could see). Left in, it is what
+		// later cannot simply ride with the limb and has to be thrown out all at once.
+		if (own.length && !broken) {
+			for (let k = Math.max(1, n - this.tie); k < n; k++) {
+				const o = k * 3;
+				_point[0] = out[o]; _point[1] = out[o + 1]; _point[2] = out[o + 2];
+				for (let i = 0; i < own.length; i++) {
+					const f = own[i];
+					const ex = _point[0] - f.o[0], ey = _point[1] - f.o[1], ez = _point[2] - f.o[2];
+					if (ex * ex + ey * ey + ez * ez > f.bound * f.bound) continue;
+					const clear = pushOut(f, _point, 0.001);
+					if (!clear) continue;
+					const dx = clear[0] - _point[0], dy = clear[1] - _point[1], dz = clear[2] - _point[2];
+					const d = Math.hypot(dx, dy, dz);
+					const step = d > OWN_EASE ? OWN_EASE / d : 1;
+					out[o] += dx * step; out[o + 1] = Math.max(FLOOR, out[o + 1] + dy * step); out[o + 2] += dz * step;
+					break;
+				}
+			}
+		}
+		// ... and the same for the links between those points (three places on each: both ends
+		// of the link go a little the way that place has to).
+		if (own.length && !broken) {
+			for (let k = Math.max(0, n - this.tie); k < n; k++) {
+				const o = k * 3;
+				for (let part = 1; part <= 3; part++) {
+					const u = part / 4;
+					_point[0] = out[o] + (out[o + 3] - out[o]) * u; _point[1] = out[o + 1] + (out[o + 4] - out[o + 1]) * u; _point[2] = out[o + 2] + (out[o + 5] - out[o + 2]) * u;
+					let moved = false;
+					for (let i = 0; i < own.length && !moved; i++) {
+						const f = own[i];
+						const ex = _point[0] - f.o[0], ey = _point[1] - f.o[1], ez = _point[2] - f.o[2];
+						if (ex * ex + ey * ey + ez * ez > f.bound * f.bound) continue;
+						const clear = pushOut(f, _point, 0.001);
+						if (!clear) continue;
+						let dx = clear[0] - _point[0], dy = clear[1] - _point[1], dz = clear[2] - _point[2];
+						const d = Math.hypot(dx, dy, dz);
+						const step = d > OWN_EASE ? OWN_EASE / d : 1;
+						dx *= step; dy *= step; dz *= step;
+						if (k >= 1) { out[o] += dx; out[o + 1] = Math.max(FLOOR, out[o + 1] + dy); out[o + 2] += dz; }
+						if (k + 1 <= n - 1) { out[o + 3] += dx; out[o + 4] = Math.max(FLOOR, out[o + 4] + dy); out[o + 5] += dz; }
+						moved = true;
+					}
+				}
+			}
+		}
 		if (near.length && !broken) this._heal(out, null, DRAWN_MARGIN, HEAL_REACH, near, 0);
 		if (own.length && !broken) this._heal(out, null, DRAWN_MARGIN);
 		// And no leaps. However the chain got where it is, what is drawn moves sideways at most
