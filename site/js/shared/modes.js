@@ -168,21 +168,21 @@ export function defaultCustomRig() {
 
 const num = (v, lo, hi, fallback) => (Number.isFinite(+v) ? Math.min(hi, Math.max(lo, +v)) : fallback);
 
-/** Validates untrusted custom-rig JSON (from storage, import or the network) into a safe rig. */
-export function sanitizeCustomRig(input, rig) {
-	const out = defaultCustomRig();
-	if (!input || typeof input !== 'object') return out;
+/**
+ * Validates an untrusted string table (from storage, import or the network). Each entry is a
+ * string or, with `kind: 'rod'`, a rod: a stiff wire that pushes as well as pulls.
+ */
+export function sanitizeStrings(list, rig) {
 	const bodies = new Set(rig.bodies.map((b) => b.id));
 	const handles = new Set(rig.handles.map((h) => h.id));
-	out.name = String(input.name || out.name).slice(0, 40);
-	for (const key of Object.keys(out.tone)) out.tone[key] = num(input.tone && input.tone[key], 0, 6, out.tone[key]);
-	out.balance = num(input.balance, 0, 1, out.balance);
-	out.stringGain = num(input.stringGain, 0, 1.5, out.stringGain);
-	out.response = num(input.response, 6, 40, out.response);
-	if (Array.isArray(input.strings)) {
-		out.strings = input.strings.slice(0, 24).filter((s) => s && bodies.has(s.body) && handles.has(s.handle)).map((s, i) => ({
+	const seen = new Set();
+	return (Array.isArray(list) ? list : []).slice(0, 24).filter((s) => s && bodies.has(s.body) && handles.has(s.handle)).map((s, i) => {
+		let id = String(s.id || `s${i + 1}`).replace(/[^\w-]/g, '').slice(0, 24) || `s${i + 1}`;
+		while (seen.has(id)) id = `${id.slice(0, 20)}_${i + 1}`;
+		seen.add(id);
+		const clean = {
 			n: i + 1,
-			id: String(s.id || `s${i + 1}`).replace(/[^\w-]/g, '').slice(0, 24) || `s${i + 1}`,
+			id,
 			label: String(s.label || `String ${i + 1}`).slice(0, 32),
 			body: s.body,
 			handle: s.handle,
@@ -194,8 +194,25 @@ export function sanitizeCustomRig(input, rig) {
 			group: String(s.group || 'custom').slice(0, 24),
 			enabled: s.enabled !== false,
 			breakable: !!s.breakable,
-		}));
-	}
+		};
+		if (s.kind === 'rod') clean.kind = 'rod';
+		// Which way the screw eye stands off the wood, where the table says so.
+		if (Array.isArray(s.out) && s.out.length === 3 && s.out.every((v) => Number.isFinite(+v)) && Math.hypot(...s.out) > 0.5) clean.out = s.out.map((v) => num(v, -1, 1, 0));
+		return clean;
+	});
+}
+
+/** Validates untrusted custom-rig JSON (from storage, import or the network) into a safe rig. */
+export function sanitizeCustomRig(input, rig) {
+	const out = defaultCustomRig();
+	if (!input || typeof input !== 'object') return out;
+	const handles = new Set(rig.handles.map((h) => h.id));
+	out.name = String(input.name || out.name).slice(0, 40);
+	for (const key of Object.keys(out.tone)) out.tone[key] = num(input.tone && input.tone[key], 0, 6, out.tone[key]);
+	out.balance = num(input.balance, 0, 1, out.balance);
+	out.stringGain = num(input.stringGain, 0, 1.5, out.stringGain);
+	out.response = num(input.response, 6, 40, out.response);
+	if (Array.isArray(input.strings)) out.strings = sanitizeStrings(input.strings, rig);
 	if (Array.isArray(input.mappings)) {
 		out.mappings = input.mappings.slice(0, 48).filter((x) => x && typeof x.src === 'string' && typeof x.dst === 'string').map((x) => {
 			const clean = { src: x.src.slice(0, 32), dst: x.dst.slice(0, 48), gain: num(x.gain, -8, 8, 1) };

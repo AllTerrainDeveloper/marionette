@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Studio — Motion Puppet</title>
+	<meta name="description" content="Animate the marionette with keyframes: control bars, string handles and the camera on a timeline.">
+	<meta name="theme-color" content="#0a0507">
+	<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23160b0d'/%3E%3Cpath d='M12 14h40M32 8v12M18 14v18M46 14v18M32 20v8' stroke='%23d9a441' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='32' cy='36' r='8' fill='%23e8b98a'/%3E%3Crect x='24' y='45' width='16' height='13' rx='4' fill='%231f6f6b'/%3E%3C/svg%3E">
+	<link rel="stylesheet" href="css/studio.css">
+	<script type="importmap">
+	{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/three-addons/" } }
+	</script>
+</head>
+<body>
+	<div class="app app--studio">
+		<header class="topbar">
+			<div class="topbar__brand"><b>Motion Puppet</b><span>Studio</span></div>
+			<input class="topbar__name" id="name" type="text" maxlength="60" aria-label="Name of this animation" spellcheck="false">
+			<span class="topbar__gap"></span>
+			<span class="topbar__saved" id="saved" aria-live="polite"></span>
+			<button class="btn" id="btn-undo" type="button" title="Undo (⌘Z / Ctrl+Z)">Undo</button>
+			<button class="btn" id="btn-redo" type="button" title="Redo (⇧⌘Z / Ctrl+Y)">Redo</button>
+			<button class="btn" id="btn-new" type="button">New</button>
+			<button class="btn" id="btn-demo" type="button" title="Load the example animation">Example</button>
+			<button class="btn" id="btn-import" type="button">Import</button>
+			<button class="btn" id="btn-export" type="button">Export</button>
+			<nav aria-label="Motion Puppet">
+				<a href="./">Stage</a>
+				<a href="editor.html">Marionette</a>
+				<a href="studio.html" aria-current="page">Studio</a>
+			</nav>
+		</header>
+		<main class="view" id="view">
+			<canvas id="stage" aria-label="The marionette on its stage"></canvas>
+			<div class="view__frame" id="frame" hidden></div>
+			<div class="view__tools">
+				<div class="seg" role="group" aria-label="Which camera the viewport shows">
+					<button type="button" id="view-free" aria-pressed="true" title="Look round freely; the shot camera and its path are drawn in the scene (1)">Workspace</button>
+					<button type="button" id="view-shot" aria-pressed="false" title="Look through the animated camera; moving the view moves the camera (2)">Through camera</button>
+				</div>
+				<button class="btn" id="btn-reset" type="button" title="Stand the puppet back up (R)">Reset puppet</button>
+			</div>
+			<div class="view__tag" id="tag" hidden></div>
+			<p class="view__hint" id="hint"></p>
+		</main>
+		<aside class="side" id="side" aria-label="Inspector"></aside>
+		<section class="time" aria-label="Timeline">
+			<div class="transport">
+				<button class="btn" id="btn-start" type="button" title="Back to the start and stand the puppet up (Home)" aria-label="Back to the start"><svg viewBox="0 0 16 16"><path d="M3 2h2v12H3zM14 2v12L6 8z"/></svg></button>
+				<button class="btn" id="btn-play" type="button" title="Play / pause (Space)" aria-label="Play"><svg viewBox="0 0 16 16"><path id="play-icon" d="M4 2l10 6-10 6z"/></svg></button>
+				<button class="btn" id="btn-loop" type="button" aria-pressed="true" title="Loop">Loop</button>
+				<span class="clock" id="clock">0.00 <small>/ 8.00 s</small></span>
+				<span class="sep"></span>
+				<label>Length <input class="num" id="duration" type="number" min="0.5" max="600" step="0.5"> s</label>
+				<span class="sep"></span>
+				<button class="btn btn--on" id="btn-key" type="button" title="Set a key on the selected track at the playhead (K)">◆ Key</button>
+				<button class="btn" id="btn-auto" type="button" aria-pressed="true" title="Every change sets a key at the playhead">Auto-key</button>
+				<span class="topbar__gap"></span>
+				<span class="topbar__saved"><kbd>Space</kbd> play · <kbd>K</kbd> key · <kbd>Del</kbd> remove · <kbd>,</kbd> <kbd>.</kbd> step</span>
+			</div>
+			<div class="tracks" id="tracks"></div>
+		</section>
+	</div>
+
+	<div class="toast" id="toast" role="status" aria-live="polite"></div>
+	<div class="curtain" id="curtain">
+		<div>
+			<h1>Studio</h1>
+			<p id="curtain-text">Carving the puppet…</p>
+		</div>
+	</div>
+	<noscript><p style="position:fixed;inset:0;display:grid;place-items:center">This page needs JavaScript and WebGL.</p></noscript>
+	<script type="module" src="js/studio/studio.js"></script>
+</body>
+</html>

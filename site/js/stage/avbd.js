@@ -17,6 +17,7 @@
 
 const MAX_MOVE = 0.2;            // largest change of a body's position in one Newton step (m)
 const MAX_TURN = 0.6;            // ... and of its orientation (rad)
+const ROD_TAKE_UP = 0.6;          // how fast a rod that is off its length comes back to it (m/s)
 const STICK_THRESHOLD = 1e-4;   // tangential drift (m) under which a contact counts as sticking
 
 // ---------------------------------------------------------------- small maths
@@ -738,6 +739,10 @@ export class Contact {
  * string does nothing at all; a taut one cannot stretch. Each via point is a
  * frictionless pulley, so tension T presses on the wrapped body with
  * T * (d_in - d_out) and pulls the attachment back along the last segment.
+ *
+ * With `rigid` set the same row is two-sided: C = length - rest = 0, with a force
+ * clamp(k*C + lambda, -max, max). That is a rod — a stiff wire that pushes as well
+ * as pulls, as the head rod of a Czech or Sicilian marionette does.
  */
 export class StringForce {
 	constructor(startStiffness) {
@@ -746,6 +751,7 @@ export class StringForce {
 		this.k = startStiffness;
 		this.lam = 0;
 		this.active = false;
+		this.rigid = false;                   // a rod: holds its length both ways
 		this.handle = new Float64Array(3);
 		this.count = 0;                       // nodes after the handle
 		this.nodeBody = [];
@@ -829,7 +835,13 @@ export class StringForce {
 		// followed at once; the rest — left over from the last step, or from the string's
 		// path having just changed — is eased out.
 		this.eval(s);
-		this.C0 = s.keepLin(Math.max(0, this.length - this.rest - Math.max(0, this.fresh)));
+		if (this.rigid) {
+			// A rod that is off its length (its handle was snatched away faster than the rod's
+			// strength could follow) comes back at a set speed, not at the gentle rate that suits
+			// a string: a stiff wire that stayed centimetres too long for a second would not look stiff.
+			const error = this.length - this.rest - this.fresh, most = ROD_TAKE_UP * s.dt;
+			this.C0 = s.keepLin(error > most ? error - most : error < -most ? error + most : 0);
+		} else this.C0 = s.keepLin(Math.max(0, this.length - this.rest - Math.max(0, this.fresh)));
 		this.lam *= s.decay;
 		this.k = clamp(this.k * s.gamma, this.kMin, this.kMin * s.ratio);
 		return true;
@@ -838,9 +850,9 @@ export class StringForce {
 	primal(s, i, H, g) {
 		this.eval(s);
 		const C = this.length - this.rest - s.alpha * this.C0;
-		const k = C < 0 ? Math.max(this.k, this.lam / s.slack) : this.k;
-		const f = clamp(k * C + this.lam, 0, this.max);
-		if (f <= 0) return;   // slack
+		const k = C < 0 && !this.rigid ? Math.max(this.k, this.lam / s.slack) : this.k;
+		const f = clamp(k * C + this.lam, this.rigid ? -this.max : 0, this.max);
+		if (f <= 0 && !this.rigid) return;   // slack
 		const grad = this.grad, lever = this.lever;
 		let lx = 0, ly = 0, lz = 0, ax = 0, ay = 0, az = 0;
 		for (let k = 0; k < this.count; k++) {
@@ -859,9 +871,9 @@ export class StringForce {
 		this.eval(s);
 		const raw = this.length - this.rest;
 		const C = raw - s.alpha * this.C0;
-		const f = clamp((C < 0 ? Math.max(this.k, this.lam / s.slack) : this.k) * C + this.lam, 0, this.max);
+		const f = clamp((C < 0 && !this.rigid ? Math.max(this.k, this.lam / s.slack) : this.k) * C + this.lam, this.rigid ? -this.max : 0, this.max);
 		this.lam = f;
-		if (f > 0 && f < this.max) this.k = Math.min(this.k + s.betaLin * Math.abs(C), this.kMin * s.ratio);
+		if ((f > 0 || this.rigid) && Math.abs(f) < this.max) this.k = Math.min(this.k + s.betaLin * Math.abs(C), this.kMin * s.ratio);
 		this.tension = f;
 	}
 

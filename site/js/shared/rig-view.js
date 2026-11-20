@@ -116,7 +116,7 @@ export function stringRestLength(def, at = def.at) {
 		RIG_HOME[0] + bar.offset[0] + h.local[0] - body.pos[0] - at[0],
 		RIG_HOME[1] + bar.offset[1] + h.local[1] - body.pos[1] - at[1],
 		RIG_HOME[2] + bar.offset[2] + h.local[2] - body.pos[2] - at[2]
-	) + (def.slack || 0);
+	) + (def.kind === 'rod' ? 0 : def.slack || 0);
 }
 
 export class StringsView {
@@ -168,8 +168,10 @@ export class StringsView {
 			const tie = effectiveAttach(def, BODIES, this.proxies);
 			const geometry = new LineGeometry();
 			geometry.setPositions(new Float32Array((SEGMENTS + 1) * 3));
+			// A rod is a stiff steel wire: drawn straight, thicker and darker than a string.
+			const rod = def.kind === 'rod';
 			const material = new LineMaterial({
-				color: this.opts.color ?? 0xe8dcc2, linewidth: this.opts.width || 1.4, transparent: true, opacity: 0.92,
+				color: rod ? ROD_COLOR : this.opts.color ?? 0xe8dcc2, linewidth: (this.opts.width || 1.4) * (rod ? ROD_WIDTH : 1), transparent: true, opacity: 0.92,
 				resolution: this.resolution, dashed: false,
 			});
 			const line = new Line2(geometry, material);
@@ -183,7 +185,7 @@ export class StringsView {
 				eye.rotation.y = Math.PI / 2;
 				this.opts.parts[body].add(eye);
 			}
-			this.items.push({ def, body, handle, line, eye, tie, rest: stringRestLength(def, tie), excluded: stringExclusions(def, tie, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null, memory: (this.memories && this.memories[this.items.length]) || {}, shape: new StringShape(SEGMENTS) });
+			this.items.push({ def, rod, body, handle, line, eye, tie, rest: stringRestLength(def, tie), excluded: stringExclusions(def, tie, BODIES, this.proxies), attach: new THREE.Vector3(), top: new THREE.Vector3(), points: null, memory: (this.memories && this.memories[this.items.length]) || {}, shape: new StringShape(SEGMENTS) });
 		}
 	}
 
@@ -211,14 +213,38 @@ export class StringsView {
 			_a.set(_a.x + pos[body * 3], _a.y + pos[body * 3 + 1], _a.z + pos[body * 3 + 2]);
 			_b.set(handlePos[handle * 3], handlePos[handle * 3 + 1], handlePos[handle * 3 + 2]);
 			item.attach.copy(_a); item.top.copy(_b);
+			const isSelected = selected && selected.has(i);
+			const t = tension[i] || 0;
 
+			if (item.rod) {
+				// Straight from the handle to the eye; it neither hangs nor wraps.
+				item.shape.live = false;
+				item.broken = false;
+				item.points = [[_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z]];
+				const arr = line.geometry.attributes.instanceStart.data.array;
+				for (let k = 0; k < SEGMENTS; k++) {
+					const o = k * 6, u = k / SEGMENTS, v = (k + 1) / SEGMENTS;
+					arr[o] = _b.x + (_a.x - _b.x) * u; arr[o + 1] = _b.y + (_a.y - _b.y) * u; arr[o + 2] = _b.z + (_a.z - _b.z) * u;
+					arr[o + 3] = _b.x + (_a.x - _b.x) * v; arr[o + 4] = _b.y + (_a.y - _b.y) * v; arr[o + 5] = _b.z + (_a.z - _b.z) * v;
+				}
+				line.geometry.attributes.instanceStart.data.needsUpdate = true;
+				const mat = line.material;
+				if (this.opts.tensionColors) {
+					// Steel when idle, warming towards red as it nears the load it can carry.
+					_c.setRGB(0.6 + 0.4 * t, 0.68 - 0.4 * t, 0.8 - 0.6 * t);
+					if (isSelected) _c.lerp(_white, 0.45);
+					mat.color.copy(_c);
+					mat.opacity = 1;
+					mat.linewidth = (this.opts.width || 2) * ROD_WIDTH * (isSelected ? 1.7 : 1);
+				}
+				return;
+			}
 			let pts = stringPath([_b.x, _b.y, _b.z], [_a.x, _a.y, _a.z], frame, item.excluded, undefined, item.memory).points;
 			// A string another string holds goes through the place where it is held.
 			if (this.tangles.enabled && !broken) pts = withKnots(pts, this.tangles.knots[i]);
 			item.broken = broken;
 			item.points = pts;
 			const rest = Math.max(0.05, item.rest - (pulls ? pulls[i] || 0 : 0));
-			const t = tension[i] || 0;
 			const shape = item.shape.update(pts, rest, broken, frame, item.excluded, dt, item.memory, body);
 			item.shape.loads(STRING_WEIGHT, body, broken, item.loads || (item.loads = []));
 
@@ -232,7 +258,6 @@ export class StringsView {
 			data.needsUpdate = true;
 
 			const mat = line.material;
-			const isSelected = selected && selected.has(i);
 			if (this.opts.tensionColors) {
 				// Cool and dim when slack, warm when carrying load, red near the limit.
 				if (broken) _c.setRGB(0.5, 0.2, 0.2);
@@ -253,7 +278,7 @@ export class StringsView {
 			input.length = this.items.length;
 			this.items.forEach((item, i) => {
 				const entry = input[i] || (input[i] = {});
-				entry.shape = item.shape; entry.active = item.line.visible && !item.broken; entry.tension = (tension[i] || 0) * (item.def.max || 0);
+				entry.shape = item.shape; entry.active = item.line.visible && !item.broken && !item.rod; entry.tension = (tension[i] || 0) * (item.def.max || 0);
 			});
 			this.tangles.update(input);
 		} else if (this.tangles.prev.length || this.tangles.knots.length) this.tangles.clear();
@@ -269,4 +294,6 @@ export class StringsView {
 	knots() { return this.tangles.enabled ? this.tangles.knots : null; }
 }
 const _white = new THREE.Color(1, 1, 1);
+const ROD_COLOR = 0x8f98a6;
+const ROD_WIDTH = 1.9;           // a rod's thickness on screen, in string widths
 const NO_PIECES = [];

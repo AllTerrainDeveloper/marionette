@@ -3,7 +3,7 @@
 
 import * as THREE from 'three';
 import { BODIES, JOINTS, HANDLES, EFFECTORS, STRINGS, BARS, RIG_HOME } from '../shared/rig-config.js';
-import { MODES, modeById, defaultCustomRig, sanitizeCustomRig, stringsForMode } from '../shared/modes.js';
+import { MODES, modeById, defaultCustomRig, sanitizeCustomRig, sanitizeStrings, stringsForMode } from '../shared/modes.js';
 import { GESTURES, GESTURE_LIST } from '../shared/gestures.js';
 import { RIG } from '../shared/rig-config.js';
 import { encodeInput, decodeState, seqNewer, PROTOCOL_VERSION } from '../shared/protocol.js';
@@ -204,6 +204,8 @@ function startBoard() {
 		switch (msg.t) {
 			case 'welcome':
 				state.slot = msg.slot === 1 ? 1 : 0;
+				// How the stage's puppet is strung (the Marionette editor may have swapped strings for rods).
+				if (Array.isArray(msg.strings)) { const strung = sanitizeStrings(msg.strings, RIG); if (strung.length) state.rigStrings = strung; }
 				if (msg.custom && !store.get('mp.custom', null)) state.custom = sanitizeCustomRig(msg.custom, RIG);
 				else link.send({ t: 'custom', rig: state.custom });
 				if (typeof msg.mode === 'string') setMode(msg.mode, false);
@@ -240,7 +242,7 @@ function updateRole() {
 }
 
 function applyStrings() {
-	state.strings = stringsForMode(state.mode, state.custom, STRINGS);
+	state.strings = stringsForMode(state.mode, state.custom, state.rigStrings || STRINGS);
 	view.setStrings(state.strings);
 	state.pulls.clear();
 	state.sel = state.sel.filter((s) => s.type !== 'string');

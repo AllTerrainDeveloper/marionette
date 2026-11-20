@@ -2,17 +2,13 @@
 // phones (one QR code each) and streams puppet state to them.
 
 import * as THREE from 'three';
-import RAPIER from '../../vendor/rapier.mjs';
 import qrcode from '../../vendor/qrcode.mjs';
 import { RIG } from '../shared/rig-config.js';
 import { MODES } from '../shared/modes.js';
-import { buildPuppet, posePuppet } from '../shared/puppet-geometry.js';
-import { RigView, StringsView } from '../shared/rig-view.js';
 import { encodeState, decodeInput, seqNewer, PROTOCOL_VERSION } from '../shared/protocol.js';
 import { HostLink } from '../shared/net.js';
-import { PuppetSim } from './sim.js';
-import { Controller } from './control.js';
-import { Stage } from './scene.js';
+import { marionetteRig } from '../shared/marionette.js';
+import { createWorld, bootError } from './world.js';
 
 const $ = (sel) => document.querySelector(sel);
 const SNAPSHOT_HZ = 40;
@@ -41,31 +37,10 @@ function qrSvg(text) {
 }
 
 async function boot() {
-	await RAPIER.init();
-	curtainText.textContent = 'Stringing the puppet…';
-	const sim = new PuppetSim(RAPIER);
-	const controller = new Controller(sim);
-	// Let the puppet settle onto its strings before the curtain rises.
-	for (let i = 0; i < sim.opts.hz * 4; i++) { controller.update(); sim.step(); }   // let the puppet come to rest before the curtain opens
-
-	const canvas = $('#stage');
-	const stage = new Stage(canvas);
-	const puppet = buildPuppet('high');
-	stage.scene.add(puppet.root);
-	const rigView = new RigView({ materials: puppet.materials });
-	stage.scene.add(rigView.group);
-	const stringLoads = [];
-	const strings = new StringsView({ width: 1.5, color: 0xeadfc6, eyeMaterial: puppet.materials.brass, parts: puppet.parts });
-	stage.scene.add(strings.group);
-	let shownStrings = null;
-
-	const resize = () => {
-		const w = window.innerWidth, h = window.innerHeight;
-		stage.resize(w, h);
-		strings.setResolution(w * stage.size[2], h * stage.size[2]);
-	};
+	// The puppet as the Marionette editor last strung it (strings, rods), or the default twelve strings.
+	const world = await createWorld($('#stage'), { rig: marionetteRig(), onProgress: (text) => { curtainText.textContent = text; } });
+	const { sim, controller, stage, puppet, strings, tuning, resize } = world;
 	window.addEventListener('resize', resize);
-	resize();
 
 	// ------------------------------------------------------------ pairing
 	const pairing = $('#pairing');
@@ -123,9 +98,7 @@ async function boot() {
 	/** Rest pose, strings re-tied, joints unlocked — and every phone but the one that asked lets go of what it holds. */
 	function resetPuppet(from = -1) {
 		controller.setLocks([]);
-		controller.reset();
-		strings.relay();
-		sim.setKnots(null);
+		world.reset();
 		broadcast({ t: 'reset' }, from);
 		toast('Puppet reset');
 	}
@@ -184,7 +157,7 @@ async function boot() {
 			s.seq = -1; s.got = false;
 			s.el.classList.add('is-paired');
 			s.state.textContent = 'Connected';
-			link.send({ ...peers(), t: 'welcome', v: PROTOCOL_VERSION, slot: s.slot, mode: controller.mode.id, custom: controller.custom, locks: [...controller.locks] });
+			link.send({ ...peers(), t: 'welcome', v: PROTOCOL_VERSION, slot: s.slot, mode: controller.mode.id, custom: controller.custom, locks: [...controller.locks], strings: world.rig.strings });
 			broadcast(peers(), s.slot);
 			if (controller.phones === 1) controller.play('greet');
 			toast(`${ROLE_NAMES[s.slot]} has taken the strings`);
@@ -253,116 +226,11 @@ async function boot() {
 	}
 
 	// ---------------------------------------------------------- main loop
-	const nb = RIG.bodies.length;
-	const ipos = new Float32Array(nb * 3);
-	const iquat = new Float32Array(nb * 4);
-	const barPos = new Float32Array(RIG.bars.length * 3);
-	const barQuat = new Float32Array(RIG.bars.length * 4);
-	const tensionNorm = new Float32Array(64);
-	// Physics takes what a 60 fps frame has to spare. Each level is [steps per second, solver
-	// sweeps, cost relative to the default]; accuracy rises with the step rate (see
-	// tools/solver-bench.mjs), so spare time buys smaller steps, and a busy frame gives them back.
-	const LEVELS = [[120, 5, 0.8], [180, 5, 0.9], [240, 5, 1], [360, 4, 1.25], [480, 4, 1.5], [720, 4, 2.15], [960, 4, 2.7]];
-	const FRAME_MS = 1000 / 60;
-	const RESERVE_MS = 4.5;        // of each frame, left for the GPU and the browser
-	const PHYSICS_MAX_MS = 9;      // never spend more than this on physics, however idle the rest is
-	let level = LEVELS.findIndex((l) => l[0] === sim.opts.hz);
-	if (level < 0) level = 2;
-	let snapEvery = 1, maxSteps = 1;
-	function setLevel(next) {
-		level = next;
-		sim.setRate(LEVELS[level][0], LEVELS[level][1]);
-		snapEvery = Math.max(1, Math.round(sim.opts.hz / SNAPSHOT_HZ));
-		maxSteps = Math.ceil(sim.opts.hz / 10);
-	}
-	setLevel(level);
-	let physEma = 0, otherEma = 3, overFor = 0, roomFor = 0, cooling = 2;
-	/** Once a frame: move to a cheaper level if physics overran its share, to a finer one if there is room. */
-	function govern(dt, physicsMs, workMs) {
-		if (dt > 0.05) return;      // a hitch or a hidden tab says nothing about the budget
-		physEma += (physicsMs - physEma) * 0.08;
-		otherEma += (workMs - physicsMs - otherEma) * 0.08;
-		if (!tuning.adaptive) return;
-		const budget = Math.min(PHYSICS_MAX_MS, Math.max(0.8, FRAME_MS - RESERVE_MS - otherEma));
-		tuning.budget = budget;
-		cooling -= dt;
-		overFor = physEma > budget ? overFor + dt : 0;
-		const next = level + 1 < LEVELS.length ? physEma * (LEVELS[level + 1][2] / LEVELS[level][2]) : Infinity;
-		roomFor = next < budget * 0.7 && cooling <= 0 ? roomFor + dt : 0;
-		if (overFor > 0.3 && level > 0) {
-			physEma *= LEVELS[level - 1][2] / LEVELS[level][2];
-			setLevel(level - 1);
-			overFor = 0; roomFor = 0; cooling = 3;
-		} else if (roomFor > 1.2) {
-			physEma = next;
-			setLevel(level + 1);
-			roomFor = 0; cooling = 1.5;
-		}
-	}
-	const chest = sim.bodyIx.chest;
 	const fpsEl = $('#fps');
-	let last = performance.now();
-	let acc = 0, steps = 0, clock = 0, frames = 0, fpsAt = last, physMs = 0;
-	// timeScale: debug mode slows time through this. adaptive: let the governor above choose the step rate.
-	const tuning = { timeScale: 1, adaptive: !new URLSearchParams(location.search).has('fixed'), budget: 0, get level() { return level; }, levels: LEVELS, setLevel: (i) => setLevel(Math.max(0, Math.min(LEVELS.length - 1, i))), govern };
-
-	function frame(now) {
-		requestAnimationFrame(frame);
-		const dt = Math.min(0.1, (now - last) / 1000);
-		last = now;
-		clock += dt;
-		acc += dt * tuning.timeScale;
-		const t0 = performance.now();
-		let n = 0;
-		while (acc >= sim.dt && n < maxSteps) {
-			controller.update();
-			sim.step();
-			acc -= sim.dt;
-			n++;
-			if (++steps % snapEvery === 0) sendSnapshots();
-		}
-		if (n === maxSteps) acc = 0;
-		const physicsMs = performance.now() - t0;
-		physMs += physicsMs;
-
-		// Render between the last two physics states.
-		const a = acc / sim.dt;
-		for (let i = 0; i < nb * 3; i++) ipos[i] = sim.prevPos[i] + (sim.pos[i] - sim.prevPos[i]) * a;
-		for (let i = 0; i < nb; i++) {
-			const o = i * 4;
-			const p = sim.prevQuat, q = sim.quat;
-			const sign = p[o] * q[o] + p[o + 1] * q[o + 1] + p[o + 2] * q[o + 2] + p[o + 3] * q[o + 3] < 0 ? -1 : 1;
-			let x = p[o] + (q[o] * sign - p[o]) * a, y = p[o + 1] + (q[o + 1] * sign - p[o + 1]) * a;
-			let z = p[o + 2] + (q[o + 2] * sign - p[o + 2]) * a, w = p[o + 3] + (q[o + 3] * sign - p[o + 3]) * a;
-			const l = Math.hypot(x, y, z, w) || 1;
-			iquat[o] = x / l; iquat[o + 1] = y / l; iquat[o + 2] = z / l; iquat[o + 3] = w / l;
-		}
-		posePuppet(puppet.parts, ipos, iquat);
-		sim.bars.forEach((bar, i) => { barPos.set(bar.pos, i * 3); barQuat.set(bar.quat, i * 4); });
-		rigView.update(barPos, barQuat, sim.handlePos);
-
-		if (shownStrings !== sim.strings) {
-			shownStrings = sim.strings;
-			strings.setStrings(sim.strings.map((s) => s.def), sim.strings.map((s) => s.memory));
-			strings.setResolution(stage.size[0] * stage.size[2], stage.size[1] * stage.size[2]);
-		}
-		let brokenMask = 0;
-		sim.strings.forEach((s, i) => { tensionNorm[i] = sim.tension[i] / s.def.max; if (s.broken) brokenMask |= 1 << i; });
-		strings.update(ipos, iquat, sim.handlePos, tensionNorm, brokenMask, clock, sim.ctl.pull);
-		sim.setStringLoads(strings.loads(stringLoads));
-		if (strings.tangles.enabled) sim.setKnots(strings.knots());
-
-		stage.update(dt, clock, { x: ipos[chest * 3], y: ipos[chest * 3 + 1], z: ipos[chest * 3 + 2] });
-		stage.render(dt);
-		if (stage.adapt(dt * 1000)) resize();
-		govern(dt, physicsMs, performance.now() - t0);
-
-		frames++;
-		if (now - fpsAt > 1000) {
-			if (!fpsEl.hidden) fpsEl.textContent = `${Math.round((frames * 1000) / (now - fpsAt))} fps · physics ${(physMs / frames).toFixed(2)} ms at ${sim.opts.hz} Hz × ${sim.opts.iterations} · quality ${stage.quality}`;
-			frames = 0; fpsAt = now; physMs = 0;
-		}
-	}
+	world.onStep = (n) => { if (n % Math.max(1, Math.round(sim.opts.hz / SNAPSHOT_HZ)) === 0) sendSnapshots(); };
+	world.onSecond = (fps, physicsMs) => {
+		if (!fpsEl.hidden) fpsEl.textContent = `${fps} fps · physics ${physicsMs.toFixed(2)} ms at ${sim.opts.hz} Hz × ${sim.opts.iterations} · quality ${stage.quality}`;
+	};
 
 	window.addEventListener('keydown', (e) => {
 		if (e.target instanceof HTMLInputElement) return;
@@ -388,16 +256,12 @@ async function boot() {
 			.catch((err) => console.error('Debug mode failed to load', err));
 	}
 
-	stage.update(0.016, 0, { x: 0, y: 1.25, z: 0 });
-	stage.render(0.016);
-	requestAnimationFrame((now) => { last = now; frame(now); });
+	world.start();
 	curtain.classList.add('is-open');
 }
 
 boot().catch((err) => {
 	console.error(err);
 	curtain.classList.add('is-error');
-	curtainText.textContent = /webgl|context/i.test(String(err && err.message))
-		? 'This browser could not start WebGL, which the stage needs. Try a recent Chrome, Edge, Firefox or Safari.'
-		: `The stage could not be set up: ${err && err.message ? err.message : err}`;
+	curtainText.textContent = bootError(err);
 });
