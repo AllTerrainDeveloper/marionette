@@ -171,7 +171,8 @@ export async function createWorld(canvas, options = {}) {
 		if (shownStrings !== sim.strings) {
 			shownStrings = sim.strings;
 			strings.setStrings(sim.strings.map((s) => s.def), sim.strings.map((s) => s.memory));
-			strings.setResolution(stage.size[0] * stage.size[2], stage.size[1] * stage.size[2]);
+			// No size yet when the page was opened with no room to draw in (a hidden tab): resize() sets it later.
+			if (stage.size) strings.setResolution(stage.size[0] * stage.size[2], stage.size[1] * stage.size[2]);
 		}
 		let brokenMask = 0;
 		sim.strings.forEach((s, i) => { tensionNorm[i] = sim.tension[i] / s.def.max; if (s.broken) brokenMask |= 1 << i; });
