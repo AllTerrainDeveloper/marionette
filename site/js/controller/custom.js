@@ -47,10 +47,22 @@ export class RigEditor {
 		if (rerender) this.render();
 	}
 
+	/** A slider with a number box beside it: drag roughly, or tap the box and type the value exactly. */
 	slider(label, value, min, max, step, onInput, format = (v) => v) {
+		const digits = Math.max(0, Math.min(4, Math.ceil(-Math.log10(step)) + 1));
+		const plain = (v) => String(+(+v).toFixed(digits));
 		const out = h('output', {}, String(format(value)));
-		const input = h('input', { type: 'range', min, max, step, value, oninput: (e) => { const v = +e.target.value; out.textContent = format(v); onInput(v); this.commit(); } });
-		return h('label', { class: 'field' }, h('span', {}, label), input, out);
+		const box = h('input', { type: 'text', inputmode: 'decimal', class: 'field__num', value: plain(value), 'aria-label': `${label}, exact value`, autocomplete: 'off' });
+		const put = (v) => { out.textContent = format(v); onInput(v); this.commit(); };
+		const input = h('input', { type: 'range', min, max, step, value, 'aria-label': label, oninput: (e) => { const v = +e.target.value; box.value = plain(v); put(v); } });
+		const typed = () => {
+			const match = box.value.replace(',', '.').match(/-?(\d+\.?\d*|\.\d+)/);
+			if (match) { const v = Math.max(min, Math.min(max, parseFloat(match[0]))); input.value = v; put(v); box.value = plain(v); } else box.value = plain(input.value);
+		};
+		box.addEventListener('focus', () => box.select());
+		box.addEventListener('change', typed);
+		box.addEventListener('keydown', (e) => { if (e.key === 'Enter') box.blur(); });
+		return h('div', { class: 'field field--num' }, h('span', {}, label), input, box, out);
 	}
 
 	select(label, value, options, onChange) {

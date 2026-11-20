@@ -1,0 +1,68 @@
+/* The menu that opens where a string or rod is clicked (js/shared/link-menu.js): on the
+   Marionette editor's viewport and on the stage. */
+
+.linkmenu {
+	position: fixed;
+	z-index: 8;
+	width: 248px;
+	padding: 10px;
+	border-radius: 10px;
+	background: rgba(20, 14, 12, 0.96);
+	border: 1px solid rgba(226, 180, 87, 0.4);
+	box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6);
+	color: #f4e9d2;
+	font: 12.5px/1.35 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+	opacity: 0;
+	transform: translateY(4px);
+	transition: opacity 0.12s, transform 0.12s;
+}
+.linkmenu[hidden] { display: none; }
+.linkmenu.is-in { opacity: 1; transform: none; }
+.linkmenu > * + * { margin-top: 8px; }
+.linkmenu button { font: inherit; color: inherit; cursor: pointer; }
+.linkmenu button:focus-visible, .linkmenu input:focus-visible { outline: 2px solid #e2b457; outline-offset: 1px; }
+
+.linkmenu header { display: flex; align-items: flex-start; gap: 8px; }
+.linkmenu header div { flex: 1; min-width: 0; }
+.linkmenu header b { display: block; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.linkmenu header small { display: block; color: #a99a80; font-size: 11px; }
+.linkmenu__x { flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #a99a80; font-size: 16px; line-height: 1; }
+.linkmenu__x:hover { background: rgba(226, 180, 87, 0.14); color: #f4e9d2; }
+
+.linkmenu__live { margin-bottom: 0; padding: 5px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.35); color: #cdbfa4; font-size: 11.5px; font-variant-numeric: tabular-nums; border-left: 3px solid #6f6455; }
+.linkmenu__live[data-state="taut"], .linkmenu__live[data-state="pulling"] { border-left-color: #e2b457; }
+.linkmenu__live[data-state="pushing"] { border-left-color: #9fb0c8; }
+.linkmenu__live[data-state="snapped"] { border-left-color: #ff9a85; color: #ff9a85; }
+
+.linkmenu__kinds { display: flex; border: 1px solid rgba(226, 180, 87, 0.34); border-radius: 7px; overflow: hidden; }
+.linkmenu__kinds button { flex: 1; padding: 5px 0; border: 0; background: transparent; color: #a99a80; }
+.linkmenu__kinds button + button { border-left: 1px solid rgba(226, 180, 87, 0.16); }
+.linkmenu__kinds button:hover { color: #f4e9d2; }
+.linkmenu__kinds button[aria-pressed="true"] { background: #e2b457; color: #2a1708; font-weight: 650; }
+.linkmenu__kinds button[aria-pressed="true"][data-kind="rod"] { background: #9fb0c8; }
+.linkmenu__kinds button[aria-pressed="true"][data-kind="off"] { background: #5a4d44; color: #f4e9d2; }
+
+.linkmenu__num { display: grid; grid-template-columns: 1fr 24px 62px 24px 20px; align-items: center; gap: 4px; }
+.linkmenu__num span { color: #cdbfa4; }
+.linkmenu__num em { color: #a99a80; font-style: normal; font-size: 11px; }
+.linkmenu__num button { height: 24px; padding: 0; border: 1px solid rgba(226, 180, 87, 0.3); border-radius: 6px; background: rgba(255, 255, 255, 0.04); font-size: 14px; line-height: 1; }
+.linkmenu__num button:hover { background: rgba(226, 180, 87, 0.18); }
+.linkmenu__num input {
+	width: 100%; height: 24px; padding: 0 6px; border: 1px solid rgba(226, 180, 87, 0.3); border-radius: 6px;
+	background: rgba(0, 0, 0, 0.4); color: #f4e9d2; font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; text-align: right;
+}
+
+.linkmenu__range { display: grid; grid-template-columns: 62px 1fr 52px; align-items: center; gap: 6px; }
+.linkmenu__range span { color: #cdbfa4; }
+.linkmenu__range input { width: 100%; margin: 0; accent-color: #e2b457; }
+.linkmenu__range em { color: #f4e9d2; font: 11.5px ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-style: normal; text-align: right; }
+
+.linkmenu__actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding-top: 8px; border-top: 1px solid rgba(226, 180, 87, 0.16); }
+.linkmenu__actions button { padding: 5px 8px; border: 1px solid rgba(226, 180, 87, 0.3); border-radius: 6px; background: rgba(255, 255, 255, 0.04); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.linkmenu__actions button.is-wide, .linkmenu__actions button:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.linkmenu__actions button:hover { background: rgba(226, 180, 87, 0.18); }
+.linkmenu__actions button.is-danger { color: #ff9a85; border-color: rgba(255, 154, 133, 0.4); }
+.linkmenu__actions button.is-danger:hover { background: rgba(255, 154, 133, 0.16); }
+.linkmenu__note { color: #7d705c; font-size: 11px; }
+
+@media (prefers-reduced-motion: reduce) { .linkmenu { transition: none; } }

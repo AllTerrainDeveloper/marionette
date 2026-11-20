@@ -121,14 +121,15 @@ export function stringRestLength(def, at = def.at) {
 
 export class StringsView {
 	/**
-	 * opts: { width (px), color, tensionColors (bool), eyeMaterial, parts (puppet part groups) }
+	 * opts: { width (px), color, tensionColors (bool), eyeMaterial, parts (puppet part groups),
+	 *         shapes (the puppet's solid pieces, when it is not the default model) }
 	 */
 	constructor(opts) {
 		this.opts = opts;
 		this.group = new THREE.Group();
 		this.items = [];
 		this.resolution = new THREE.Vector2(1024, 768);
-		this.proxies = buildWrapProxies(BODIES);
+		this.proxies = buildWrapProxies(BODIES, opts.shapes || undefined);
 		this.tangles = new Tangles();   // strings catching on each other: off unless `tangles.enabled` is set
 		this.frame = [];
 	}
@@ -236,6 +237,8 @@ export class StringsView {
 					mat.color.copy(_c);
 					mat.opacity = 1;
 					mat.linewidth = (this.opts.width || 2) * ROD_WIDTH * (isSelected ? 1.7 : 1);
+				} else {
+					mat.linewidth = (this.opts.width || 1.4) * ROD_WIDTH * (isSelected ? 1.7 : 1);
 				}
 				return;
 			}
@@ -268,7 +271,8 @@ export class StringsView {
 				mat.opacity = t < 0.004 && !isSelected ? 0.55 : 1;
 				mat.linewidth = (this.opts.width || 2) * (isSelected ? 2.1 : 1 + t * 0.9);
 			} else {
-				mat.opacity = broken ? 0.4 : 0.9;
+				mat.opacity = broken ? 0.4 : isSelected ? 1 : 0.9;
+				mat.linewidth = (this.opts.width || 1.4) * (isSelected ? 2.4 : 1);
 			}
 		});
 		// Strings catching on each other, if that is switched on: the chains are kept from passing

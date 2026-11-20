@@ -6,7 +6,7 @@ A physics-driven wooden marionette on a theatre stage, played with your phone.
 - **Phone (`site/controller.html`)** — the puppeteer's board. Captures motion sensors and touch, and draws an interactive top-down 3D view of the puppet, its strings and the control rig from the state streamed back by the stage. No physics runs on the phone.
 - **Pro (two phones)** — scan the second QR code with a second phone. Phone one holds the main bar (head, back, shoulders, hips); phone two holds the limb bar (wrists, knees, ankles). In *Arms & Hands* each phone is one hand.
 
-- **Marionette editor (`site/editor.html`)** — how the puppet is strung. Each of its links is a **string** (only pulls, hangs slack, wraps round a limb), a **rod** (a stiff wire that pushes as well as pulls — the head rod of a Czech or Sicilian marionette) or taken off; links can be added, moved to another handle or part, and tuned. The puppet in the viewport is the real one on the real physics, with a test bench that works the bars. What you make is saved in the browser, and the stage and the Studio string their puppet from it.
+- **Marionette editor (`site/editor.html`)** — which puppet it is and how it is strung. Three puppets share one skeleton: **the Gentleman**, **the Ballerina** and **the Knight**. Each link is a **string** (only pulls, hangs slack, wraps round a limb), a **rod** (a stiff wire that pushes as well as pulls — the head rod of a Czech or Sicilian marionette) or taken off; eight traditional stringings are a click away, and links can be added, mirrored, moved to another handle or part, and tuned by slider or by typing the exact value. The puppet in the viewport is the real one on the real physics, with a test bench that works the bars. What you make is saved in the browser, and the stage and the Studio build their puppet from it.
 - **Studio (`site/studio.html`)** — a keyframe animation editor, worked with the mouse like any animation tool (no phone, no sensors). Keys are set on a timeline for the two control bars, the twelve string handles and the camera; the puppet is still moved by its strings and the physics. The camera and the bars travel on **Bezier curves** through their keys; every stretch between two keys is **eased** by a timing curve you pick or draw.
 
 Live: https://marionette.space.fast/
@@ -36,9 +36,18 @@ The panel also shows live measurements against the rendered meshes (how much str
 
 ### The Marionette editor
 
-Open `editor.html` (or press **Marionette** on the stage). Click a link in the list or in the viewport, then choose **String**, **Rod** or **Off** (keys `s`, `d`, `x`; arrows move through the list). *Start from* has three traditional stringings: all strings, a head rod, and head and hand rods. The selected link can be renamed, hung from another handle, tied to another part, given more or less slack (strings) and a different strength. *Try it* works the control bars — rock, bow, lift and lower, hands, march, shake — so the difference shows: lower the bar and a string goes slack where a rod pushes. Drag to look round, right-drag to slide, wheel to zoom.
+Open `editor.html` (or press **Marionette** on the stage).
 
-The stringing is saved in this browser (`localStorage`, key `motion-puppet-marionette`) and can be exported and imported as JSON. The stage and the Studio use it from then on, and a phone that joins is told how the puppet is strung; **Use on stage** saves it and opens the stage with it, and **Load default** goes back to the twelve strings.
+- **Puppet.** The Gentleman (turned wood, waistcoat, felt hat), the Ballerina (slight limbs, a tutu that is really there, pointe shoes) or the Knight (a Sicilian paladin in plate). A model is another table of solid pieces on the same nineteen bodies and eighteen joints, so what is drawn, what collides and what a string wraps round all change together, and every stringing, control mode and animation fits every puppet.
+- **Stringing.** Eight traditions, each drawn as a small diagram: *All strings* (the classic twelve), *Seven strings* (a first marionette), *Head rod* (Czech), *Head and hand rods* (Sicilian), *One rod, nothing else* (Liège), *Head, waist and hands* (Rajasthani kathputli), *Temples and elbows* (Burmese, sixteen links) and *Shoulder rods* (a body that stays level). Change anything by hand and it becomes your own.
+- **Links.** Click a link in the list or in the viewport, then choose **String**, **Rod** or **Off** (keys `s`, `d`, `x`; arrows move through the list; `/` finds one by name). The selected link can be renamed, hung from another handle, tied to another part, its tie point moved, given more or less slack (strings) and a different strength; **Duplicate** (`⌘D`), **Mirror** to the other side (`m`), put back **As it came**, or removed (`Del`). A live readout shows what it is carrying.
+- **A menu on each link.** Click a string or rod in the viewport (or right-click it): it is selected and a menu opens beside it with what it is carrying, string / rod / off, its slack and strength as exact numbers, and Cut it, Duplicate, Mirror, As it came, Remove. The stage has its own menu on a link while no phone is paired, for moving it rather than changing it: drag a string or rod and its handle follows the mouse and stays there; click one for Lift, Side, Forward and Pull sliders, Tug, Let go, Cut it and a way to the editor. Reset, or a phone taking the strings, lets everything go.
+- **Cut and tie again; wrapping on or off.** A cut (or snapped) string's menu offers *Tie it again*, which puts that one string back without resetting the puppet. **Wrap** (`W`, on the stage and in the editor) switches off every string and rod catching on the puppet's limbs, so they run straight through the wood; it is remembered on the device, the Studio follows it, and a paired phone draws its strings the same way.
+- **Exact values.** Every slider has a number box beside it: drag roughly, or type the value (`1.53`), which is not rounded to the slider's step. In the box `↑` `↓` step, `Shift` ten steps, `Alt` a tenth; double-click a label to put its value back. The Studio's sliders and the phone's Custom Rig sliders have the same box.
+- **Try it** works the control bars — rock, bow, lift and lower, hands, march, walk about, shake — at any speed and size, so the difference shows: lower the bar and a string goes slack where a rod pushes. Drag to look round, right-drag to slide, wheel to zoom; `1`–`4` look from the front, the side, above and at the bars.
+- **Undo** (`⌘Z`) and redo (`⇧⌘Z`) for everything but the choice of puppet; `?` lists the keys.
+
+The marionette is saved in this browser (`localStorage`, key `motion-puppet-marionette`: name, model, links) and can be exported and imported as JSON. The stage and the Studio use it from then on, and a phone that joins is told which puppet it is and how it is strung; **Use on stage** saves it and opens the stage with it, and **Load default** goes back to the Gentleman on his twelve strings.
 
 ### The Studio
 
@@ -58,7 +67,7 @@ Nothing is posed directly: a key is a target for the control layer, exactly what
 | Path | What it is |
 | --- | --- |
 | `site/js/shared/rig-config.js` | The puppet as data: 19 bodies, 18 joints (limits, tone, torque), 2 control bars, 12 handles, 12 strings, 4 IK effectors. |
-| `site/js/shared/puppet-shapes.js` | The puppet's solid form, once: 49 lathe-turned pieces. The rendered meshes, the physics colliders and the string collision shapes are all built from this table. |
+| `site/js/shared/puppet-shapes.js` | The puppets' solid form, once: a table of lathe-turned pieces per model (49 for the Gentleman; the Ballerina and the Knight are other tables on the same bodies). The rendered meshes, the physics colliders and the string collision shapes are all built from the chosen table. |
 | `site/js/shared/modes.js` | The six control configurations and the Custom Rig JSON schema. |
 | `site/js/shared/mapping.js` | Motion mapping engine (sensitivity, dead zone, smoothing, curve, clamp, invert). |
 | `site/js/shared/string-path.js` | String-versus-puppet collision: routes a string over the surface of any piece it would cut through, its own limb included. Shared by the simulation and both renderers. |
@@ -69,7 +78,7 @@ Nothing is posed directly: a key is a target for the control layer, exactly what
 | `site/js/stage/sim.js` | The puppet on that solver: control rig, string routing, contact detection, IK, balance, safety guards. |
 | `site/js/shared/gestures.js` | The one-tap moves (bow, wave, cheer, salute, kicks…), shared by the stage that plays them and the phone that lists them. They take turns: tapping a new one makes the one playing bow out over a third of a second (stacked, they threw the puppet about). |
 | `site/js/stage/world.js` | The puppet's world as every desktop page shows it: simulation, control layer, theatre, meshes, strings, and the loop that steps the physics and draws a frame. The stage, the Marionette editor and the Studio are all built on it. |
-| `site/js/shared/marionette.js` | The saved stringing (strings and rods) and the traditional presets. |
+| `site/js/shared/marionette.js` | The saved marionette (model, strings and rods) and the eight traditional stringings. |
 | `site/js/shared/timeline.js` | The Studio's keyframe engine: tracks, keys, `cubic-bezier` easing, Bezier paths, sampling. Plain data, no DOM. |
 | `site/js/studio/*` | The two workbench pages: `editor.js` (Marionette editor), `studio.js` (Studio), the orbit camera and viewport picking, small UI helpers. |
 | `site/js/stage/control.js` | Phone input → bar / handle / IK / motor targets; gait; idle animation. |
@@ -81,7 +90,7 @@ Nothing is posed directly: a key is a target for the control layer, exactly what
 
 The client probes `signal.php` first and falls back to `/api/signal`. Spacefast does not execute uploaded PHP, so the published Space uses the Function; any PHP host uses `signal.php`.
 
-Connectivity: STUN only. Devices on the same Wi-Fi connect directly; some carrier / corporate networks will not without a TURN relay.
+Connectivity: STUN only. Devices on the same Wi-Fi connect directly; some carrier / corporate networks will not without a TURN relay — the pairing ticket and the phone's failure message both say to use the same Wi‑Fi.
 
 ## Physics notes
 
@@ -106,6 +115,7 @@ Connectivity: STUN only. Devices on the same Wi-Fi connect directly; some carrie
 node tools/sim-test.mjs          # hang, lift, shake, IK, collapse, recover, strings vs the real meshes
 node tools/control-test.mjs      # protocol round trips, every mode, walking, two phones, locks
 node tools/rod-test.mjs          # rods: push and pull, calm at rest and thrown about, restringing, the saved stringing
+node tools/marionette-test.mjs   # every puppet on every traditional stringing: stands, keeps still, thrown about, reset; the saved document
 node tools/studio-test.mjs       # the Studio's keyframe engine (easing, Bezier paths, files) and an animation played on the puppet
 node tools/string-test.mjs       # drawn strings: still, idle, gentle play, thrown about, moves tapped in a hurry, hanging, lying, a foot jolted at random — jumps, strings in the wood, strings under the floor
 node tools/tangle-test.mjs       # optional tangling: strings catch on each other, hold, drag, and do nothing when nothing touches

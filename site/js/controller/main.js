@@ -78,7 +78,7 @@ btnStart.addEventListener('click', async () => {
 		await link.join(code);
 	} catch (err) {
 		introStatus.classList.add('is-error');
-		introStatus.textContent = err && err.code ? err.message : 'Could not reach the stage. Check that it is still open, then try again.';
+		introStatus.textContent = err && err.code ? err.message : 'Could not reach the stage. Put this phone on the same Wi‑Fi as the stage’s screen (mobile data usually will not connect), check the stage is still open, then try again.';
 		btnStart.disabled = err && (err.code === 'expired' || err.code === 'taken');
 		btnStart.textContent = btnStart.disabled ? 'Scan a fresh code' : 'Try again';
 		return;
@@ -206,6 +206,9 @@ function startBoard() {
 				state.slot = msg.slot === 1 ? 1 : 0;
 				// How the stage's puppet is strung (the Marionette editor may have swapped strings for rods).
 				if (Array.isArray(msg.strings)) { const strung = sanitizeStrings(msg.strings, RIG); if (strung.length) state.rigStrings = strung; }
+				// ... and which puppet it is (the gentleman, the ballerina, the knight).
+				if (typeof msg.model === 'string') view.setModel(msg.model);
+				view.strings.wrap = msg.wrap !== false;
 				if (msg.custom && !store.get('mp.custom', null)) state.custom = sanitizeCustomRig(msg.custom, RIG);
 				else link.send({ t: 'custom', rig: state.custom });
 				if (typeof msg.mode === 'string') setMode(msg.mode, false);
@@ -215,6 +218,7 @@ function startBoard() {
 			case 'mode': if (typeof msg.id === 'string') setMode(msg.id, false); break;
 			case 'custom': state.custom = sanitizeCustomRig(msg.rig, RIG); store.set('mp.custom', state.custom); if (state.mode.custom) applyStrings(); break;
 			case 'peers': state.phones = msg.phones || 1; if (Array.isArray(msg.slots)) state.slots = [!!msg.slots[0], !!msg.slots[1]]; updateRole(); if (state.phones === 2) toast('Pro: a second puppeteer joined'); break;
+			case 'wrap': view.strings.wrap = msg.on !== false; view.strings.relay(); break;   // the stage switched string wrapping
 			case 'reset': letGo(); toast('Puppet reset'); break;   // the stage or the other phone pressed Reset
 			default: break;
 		}

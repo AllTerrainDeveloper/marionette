@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { BODIES, JOINTS, HANDLES, EFFECTORS, RIG_HOME } from '../shared/rig-config.js';
 import { buildPuppet, posePuppet, jointWorld } from '../shared/puppet-geometry.js';
 import { RigView, StringsView } from '../shared/rig-view.js';
+import { modelById } from '../shared/puppet-shapes.js';
 
 export const DEFAULT_ORBIT = { azimuth: 0, polar: 0.2, distance: 4.0 };
 const DELAY_MS = 70;       // render this far behind the newest snapshot to always have two to blend
@@ -86,12 +87,9 @@ export class BoardView {
 		this.blob.rotation.x = -Math.PI / 2; this.blob.position.y = 0.004;
 		scene.add(this.blob);
 
-		this.puppet = buildPuppet('low');
-		scene.add(this.puppet.root);
 		this.rigView = new RigView({ ghost: true, knob: 0.03 });
 		scene.add(this.rigView.group);
-		this.strings = new StringsView({ width: 2.2, tensionColors: true });
-		scene.add(this.strings.group);
+		this.setModel();
 
 		this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 40);
 		this.orbit = { ...DEFAULT_ORBIT };
@@ -113,6 +111,22 @@ export class BoardView {
 		this.camera.updateProjectionMatrix();
 		this.strings.setResolution(w * ratio, h * ratio);
 		this.width = w; this.height = h;
+	}
+
+	/** Which puppet the stage has up (see MODELS): carved again here, and its strings tied to its own surface. */
+	setModel(id) {
+		const model = modelById(id);
+		if (this.puppet && this.puppet.model === model.id) return;
+		const defs = this.strings ? this.strings.items.map((item) => item.def) : null;
+		if (this.puppet) {
+			this.scene.remove(this.puppet.root, this.strings.group);
+			this.puppet.root.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
+			this.strings.setStrings([]);
+		}
+		this.puppet = buildPuppet('low', this.puppet ? this.puppet.materials : undefined, model.id);
+		this.strings = new StringsView({ width: 2.2, tensionColors: true, shapes: model.shapes });
+		this.scene.add(this.puppet.root, this.strings.group);
+		if (defs) this.setStrings(defs);
 	}
 
 	setStrings(defs) {

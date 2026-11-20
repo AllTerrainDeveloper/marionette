@@ -9,7 +9,7 @@
 
 import * as THREE from 'three';
 import { BODIES, JOINTS } from './rig-config.js';
-import { SHAPES, HAT_FRAME } from './puppet-shapes.js';
+import { HAT_FRAME, modelById } from './puppet-shapes.js';
 
 function grainTexture(size, seed = 1) {
 	const canvas = document.createElement('canvas');
@@ -75,6 +75,14 @@ export function makeMaterials(detail = 'high') {
 		paintBlack: new THREE.MeshStandardMaterial({ color: 0x14100e, roughness: 0.3 }),
 		blush: new THREE.MeshStandardMaterial({ color: 0xe58f7c, roughness: 0.6 }),
 		felt: new THREE.MeshStandardMaterial({ color: 0x1d2a38, roughness: 0.95 }),
+		// The ballerina's and the knight's.
+		paintPink: new THREE.MeshStandardMaterial({ color: 0xb8607a, roughness: 0.5 }),
+		satin: new THREE.MeshStandardMaterial({ color: 0xc98a98, roughness: 0.3 }),
+		tulle: new THREE.MeshStandardMaterial({ color: 0xb99aa4, roughness: 0.95 }),
+		tulleDeep: new THREE.MeshStandardMaterial({ color: 0x9c6f80, roughness: 0.95 }),
+		tights: new THREE.MeshStandardMaterial({ color: 0xa8998a, roughness: 0.7 }),
+		hair: wood(0x5a3520, 0.7),
+		steel: new THREE.MeshStandardMaterial({ color: 0x77808d, roughness: 0.46, metalness: 0.62 }),
 	};
 }
 
@@ -94,61 +102,147 @@ function turnPiece(piece, materials, segments) {
 
 /**
  * Builds the puppet. Returns { root, parts } where parts[i] is the group for
- * rig body i. `detail`: 'high' for the stage, 'low' for phones.
+ * rig body i. `detail`: 'high' for the stage, 'low' for phones. `model`: which
+ * puppet (see MODELS in puppet-shapes.js); the gentleman if none is named.
  */
-export function buildPuppet(detail = 'high', materials = makeMaterials(detail)) {
+export function buildPuppet(detail = 'high', materials = makeMaterials(detail), model = undefined) {
 	const m = materials;
 	const hi = detail === 'high';
 	const seg = hi ? 28 : 14;
+	const which = modelById(model);
 	const root = new THREE.Group();
 	const parts = BODIES.map((def) => {
 		const group = new THREE.Group();
 		group.name = def.id;
-		for (const piece of SHAPES[def.id] || []) group.add(turnPiece(piece, m, seg));
+		for (const piece of which.shapes[def.id] || []) group.add(turnPiece(piece, m, seg));
 		root.add(group);
 		return group;
 	});
 	const part = (id) => parts[BODIES.findIndex((b) => b.id === id)];
 	const add = (id, ...meshes) => { for (const mesh of meshes) part(id).add(mesh); };
 
-	// --- painted and fitted details (no collision volume of their own) --------
-	// Waistcoat buttons and a bow tie.
-	for (let i = 0; i < 3; i++) add('chest', at(sphere(0.011, m.brass, 10), 0, 0.04 - i * 0.045, 0.094 - Math.abs(i - 1) * 0.004 + (i === 2 ? -0.006 : 0)));
-	const bowL = at(sphere(0.03, m.paintRed, 12), 0.03, 0.098, 0.074); bowL.scale.set(1, 0.7, 0.45);
-	const bowR = at(sphere(0.03, m.paintRed, 12), -0.03, 0.098, 0.074); bowR.scale.set(1, 0.7, 0.45);
-	add('chest', bowL, bowR, at(sphere(0.012, m.paintRed, 10), 0, 0.098, 0.08));
-
-	// The face.
-	for (const sx of [1, -1]) {
-		const white = at(sphere(0.026, m.paintCream, 14), sx * 0.042, 0.018, 0.098); white.scale.set(1, 1.15, 0.45);
-		const pupil = at(sphere(0.012, m.paintBlack, 12), sx * 0.04, 0.014, 0.111); pupil.scale.set(1, 1.1, 0.45);
-		const glint = at(sphere(0.004, m.paintCream, 8), sx * 0.04 + 0.004, 0.02, 0.117);
-		const brow = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.008, 0.01), m.dark);
-		brow.position.set(sx * 0.044, 0.058, 0.098); brow.rotation.set(-0.3, sx * -0.35, sx * 0.22);
-		const cheek = at(sphere(0.02, m.blush, 10), sx * 0.066, -0.034, 0.083); cheek.scale.set(1, 0.8, 0.35);
-		add('head', white, pupil, glint, brow, cheek);
-	}
-	const smile = new THREE.Mesh(new THREE.TorusGeometry(0.034, 0.0042, 8, 20, Math.PI * 0.72), m.paintRed);
-	smile.position.set(0, -0.04, 0.099); smile.rotation.set(-0.18, 0, Math.PI + (Math.PI - Math.PI * 0.72) / 2);
-	add('head', smile);
-	// The hat band.
-	const band = new THREE.Mesh(new THREE.CylinderGeometry(0.063, 0.0665, 0.016, seg), m.paintRed);
-	band.quaternion.set(HAT_FRAME.rot[0], HAT_FRAME.rot[1], HAT_FRAME.rot[2], HAT_FRAME.rot[3]);
-	band.position.copy(new THREE.Vector3(0, 0.012, 0).applyQuaternion(band.quaternion)).add(new THREE.Vector3(HAT_FRAME.at[0], HAT_FRAME.at[1], HAT_FRAME.at[2]));
-	add('head', band);
-
-	// Brass hinge pins and shoe buckles.
-	for (const side of ['L', 'R']) {
-		add(`upperArm${side}`, at(new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.086, 8), m.brass), 0, -0.14, 0).rotateZ(Math.PI / 2));
-		add(`thigh${side}`, at(new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.106, 8), m.brass), 0, -0.195, 0).rotateZ(Math.PI / 2));
-		add(`foot${side}`, at(new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.008, 0.026), m.brass), 0, 0.024, 0.03));
-	}
+	// Painted and fitted details (no collision volume of their own).
+	DETAILS[which.id]({ m, add, seg });
 
 	root.traverse((o) => {
 		if (o.isMesh) { o.castShadow = hi; o.receiveShadow = hi; }
 	});
-	return { root, parts, materials: m };
+	return { root, parts, materials: m, model: which.id };
 }
+
+const box = (w, h, d, mat) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+const pin = (r, length, mat) => new THREE.Mesh(new THREE.CylinderGeometry(r, r, length, 8), mat);
+
+/** Brass pins through the elbow and knee hinges. */
+function hingePins({ m, add }, elbow = 0.086, knee = 0.106, mat = m.brass) {
+	for (const side of ['L', 'R']) {
+		add(`upperArm${side}`, at(pin(0.008, elbow, mat), 0, -0.14, 0).rotateZ(Math.PI / 2));
+		add(`thigh${side}`, at(pin(0.009, knee, mat), 0, -0.195, 0).rotateZ(Math.PI / 2));
+	}
+}
+
+const DETAILS = {
+	gentleman(ctx) {
+		const { m, add, seg } = ctx;
+		// Waistcoat buttons and a bow tie.
+		for (let i = 0; i < 3; i++) add('chest', at(sphere(0.011, m.brass, 10), 0, 0.04 - i * 0.045, 0.094 - Math.abs(i - 1) * 0.004 + (i === 2 ? -0.006 : 0)));
+		const bowL = at(sphere(0.03, m.paintRed, 12), 0.03, 0.098, 0.074); bowL.scale.set(1, 0.7, 0.45);
+		const bowR = at(sphere(0.03, m.paintRed, 12), -0.03, 0.098, 0.074); bowR.scale.set(1, 0.7, 0.45);
+		add('chest', bowL, bowR, at(sphere(0.012, m.paintRed, 10), 0, 0.098, 0.08));
+
+		// The face.
+		for (const sx of [1, -1]) {
+			const white = at(sphere(0.026, m.paintCream, 14), sx * 0.042, 0.018, 0.098); white.scale.set(1, 1.15, 0.45);
+			const pupil = at(sphere(0.012, m.paintBlack, 12), sx * 0.04, 0.014, 0.111); pupil.scale.set(1, 1.1, 0.45);
+			const glint = at(sphere(0.004, m.paintCream, 8), sx * 0.04 + 0.004, 0.02, 0.117);
+			const brow = box(0.04, 0.008, 0.01, m.dark);
+			brow.position.set(sx * 0.044, 0.058, 0.098); brow.rotation.set(-0.3, sx * -0.35, sx * 0.22);
+			const cheek = at(sphere(0.02, m.blush, 10), sx * 0.066, -0.034, 0.083); cheek.scale.set(1, 0.8, 0.35);
+			add('head', white, pupil, glint, brow, cheek);
+		}
+		const smile = new THREE.Mesh(new THREE.TorusGeometry(0.034, 0.0042, 8, 20, Math.PI * 0.72), m.paintRed);
+		smile.position.set(0, -0.04, 0.099); smile.rotation.set(-0.18, 0, Math.PI + (Math.PI - Math.PI * 0.72) / 2);
+		add('head', smile);
+		// The hat band.
+		const band = new THREE.Mesh(new THREE.CylinderGeometry(0.063, 0.0665, 0.016, seg), m.paintRed);
+		band.quaternion.set(HAT_FRAME.rot[0], HAT_FRAME.rot[1], HAT_FRAME.rot[2], HAT_FRAME.rot[3]);
+		band.position.copy(new THREE.Vector3(0, 0.012, 0).applyQuaternion(band.quaternion)).add(new THREE.Vector3(HAT_FRAME.at[0], HAT_FRAME.at[1], HAT_FRAME.at[2]));
+		add('head', band);
+
+		// Brass hinge pins and shoe buckles.
+		hingePins(ctx);
+		for (const side of ['L', 'R']) add(`foot${side}`, at(box(0.04, 0.008, 0.026, m.brass), 0, 0.024, 0.03));
+	},
+
+	ballerina(ctx) {
+		const { m, add, seg } = ctx;
+		// The face: large dark eyes, lashes, a small mouth.
+		for (const sx of [1, -1]) {
+			const white = at(sphere(0.022, m.paintCream, 14), sx * 0.038, 0.012, 0.09); white.scale.set(1, 1.2, 0.45);
+			const pupil = at(sphere(0.012, m.paintBlack, 12), sx * 0.037, 0.01, 0.1); pupil.scale.set(1, 1.2, 0.45);
+			const glint = at(sphere(0.0036, m.paintCream, 8), sx * 0.037 + 0.004, 0.017, 0.105);
+			const lash = box(0.034, 0.005, 0.008, m.paintBlack);
+			lash.position.set(sx * 0.04, 0.04, 0.092); lash.rotation.set(-0.3, sx * -0.3, sx * -0.2);
+			const cheek = at(sphere(0.018, m.blush, 10), sx * 0.058, -0.03, 0.078); cheek.scale.set(1, 0.8, 0.35);
+			add('head', white, pupil, glint, lash, cheek);
+		}
+		const mouth = at(sphere(0.012, m.paintRed, 10), 0, -0.046, 0.089); mouth.scale.set(1.3, 0.6, 0.4);
+		// A ribbon round the bun, and a tiara's worth of brass at the hairline.
+		const ribbon = new THREE.Mesh(new THREE.TorusGeometry(0.038, 0.006, 8, 20), m.paintPink);
+		ribbon.position.set(0, 0.078, -0.052); ribbon.rotation.set(-0.95, 0, 0);
+		add('head', mouth, ribbon);
+		for (let i = -1; i <= 1; i++) add('head', at(sphere(i ? 0.006 : 0.009, m.brass, 8), i * 0.022, 0.104 - Math.abs(i) * 0.004, 0.036));
+
+		// The bodice: a neckline and a ribbon at the waist.
+		const neckline = new THREE.Mesh(new THREE.TorusGeometry(0.058, 0.005, 8, 24, Math.PI), m.paintCream);
+		neckline.position.set(0, 0.104, 0.03); neckline.rotation.set(-1.0, 0, Math.PI); neckline.scale.set(1.2, 1, 1);
+		add('chest', neckline);
+		const sash = new THREE.Mesh(new THREE.CylinderGeometry(0.098, 0.1, 0.02, seg), m.satin);
+		sash.scale.set(1.12, 1, 0.74);
+		add('abdomen', at(sash, 0, -0.02, 0));
+
+		// Ankle ribbons, crossed twice round each shin.
+		for (const side of ['L', 'R']) {
+			for (const y of [-0.115, -0.15]) {
+				const tie = new THREE.Mesh(new THREE.TorusGeometry(0.029 - (y + 0.115) * -0.06, 0.004, 6, 18), m.satin);
+				tie.position.set(0, y, 0); tie.rotation.set(Math.PI / 2 + (y < -0.13 ? 0.3 : -0.3), 0, 0);
+				add(`shin${side}`, tie);
+			}
+		}
+		hingePins(ctx, 0.066, 0.086);
+	},
+
+	knight(ctx) {
+		const { m, add, seg } = ctx;
+		// The visor: a dark sight and a row of breaths.
+		const sight = box(0.1, 0.012, 0.02, m.paintBlack);
+		sight.position.set(0, 0.03, 0.112);
+		add('head', sight);
+		for (let i = -2; i <= 2; i++) add('head', at(sphere(0.005, m.paintBlack, 8), i * 0.016, -0.05 - Math.abs(i) * 0.002, 0.098 - Math.abs(i) * 0.004));
+		const rim = new THREE.Mesh(new THREE.TorusGeometry(0.111, 0.006, 8, seg), m.brass);
+		rim.position.set(0, 0.055, 0); rim.rotation.set(Math.PI / 2, 0, 0); rim.scale.set(0.97, 1.01, 1);
+		add('head', rim);
+
+		// The breastplate: a cross on a red field, rivets at the shoulders.
+		const field = at(sphere(0.07, m.paintRed, 16), 0, 0.012, 0.074); field.scale.set(0.95, 1.15, 0.62);
+		add('chest', field, at(box(0.02, 0.1, 0.012, m.brass), 0, 0.014, 0.114), at(box(0.07, 0.02, 0.012, m.brass), 0, 0.03, 0.114));
+		for (const sx of [1, -1]) add('chest', at(sphere(0.008, m.brass, 8), sx * 0.118, 0.07, 0.07));
+		// A buckle on the sword belt, and brass edges to the skirt of plates.
+		add('pelvis', at(box(0.04, 0.028, 0.012, m.brass), 0, 0.03, 0.104));
+		const hem = new THREE.Mesh(new THREE.TorusGeometry(0.142, 0.006, 8, seg), m.brass);
+		hem.position.set(0, -0.072, 0); hem.rotation.set(Math.PI / 2, 0, 0); hem.scale.set(1.18, 0.84, 1);
+		add('pelvis', hem);
+
+		// Rivets on the pauldrons, spurs at the heels.
+		for (const [side, sx] of [['L', 1], ['R', -1]]) {
+			add(`clavicle${side}`, at(sphere(0.007, m.brass, 8), sx * 0.095, 0.02, 0.054));
+			const spur = pin(0.004, 0.05, m.brass);
+			spur.position.set(0, -0.004, -0.075); spur.rotation.set(Math.PI / 2 - 0.25, 0, 0);
+			add(`foot${side}`, spur, at(sphere(0.009, m.brass, 8), 0, 0.002, -0.1));
+		}
+		hingePins(ctx, 0.09, 0.11, m.iron);
+	},
+};
 
 /** Copies simulated transforms (flat position / quaternion arrays) onto the part groups. */
 export function posePuppet(parts, pos, quat) {

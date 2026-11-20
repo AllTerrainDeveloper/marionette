@@ -21,6 +21,8 @@ html, body {
 	overflow: hidden;
 }
 
+#stage.is-over { cursor: grab; }
+#stage.is-dragging { cursor: grabbing; }
 #stage {
 	position: fixed;
 	inset: 0;
@@ -127,6 +129,11 @@ body::after {
 }
 
 .ticket__note { margin: 0; font-size: 0.82rem; line-height: 1.4; color: #5a4332; }
+/* The one thing that stops a phone joining: pairing is direct, so both must be on one network. */
+.ticket__wifi { display: flex; gap: 6px; align-items: flex-start; margin: 6px 0 0; padding: 5px 7px; border-radius: 6px; background: rgba(125, 17, 28, 0.1); border: 1px solid rgba(125, 17, 28, 0.28); font-size: 0.76rem; line-height: 1.35; color: #5a1c16; }
+.ticket__wifi svg { flex: none; width: 15px; height: 15px; margin-top: 1px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.ticket__wifi circle { fill: currentColor; stroke: none; }
+.ticket.is-folded .ticket__wifi, .ticket.is-paired .ticket__wifi { display: none; }
 
 .ticket__state {
 	margin: 8px 0 0;
@@ -208,7 +215,8 @@ a.stagebar__btn { text-decoration: none; }
 /* --- bare stage: press H and everything but the performer steps out ------ */
 
 .marquee, .playbill { transition: opacity 0.4s, visibility 0.4s; }
-.is-bare .marquee, .is-bare .playbill, .is-bare .pairing, .is-bare #btn-reset, .is-bare #btn-knots, .is-bare a.stagebar__btn { opacity: 0; visibility: hidden; pointer-events: none; }
+.is-bare .marquee, .is-bare .playbill, .is-bare .pairing, .is-bare #btn-reset, .is-bare #btn-knots, .is-bare #btn-wrap, .is-bare a.stagebar__btn { opacity: 0; visibility: hidden; pointer-events: none; }
+#btn-wrap[aria-pressed="false"] { border-color: rgba(159, 176, 200, 0.6); color: #c3cfe0; }
 #btn-knots[aria-pressed="true"] { border-color: rgba(226, 180, 87, 0.75); color: #f3d38a; }
 /* All that is left is a faint eye in the corner to bring it back. */
 .is-bare #btn-ui { padding: 7px; border-color: transparent; background: none; opacity: 0.45; }
@@ -238,9 +246,9 @@ a.stagebar__btn { text-decoration: none; }
 
 .toast {
 	position: fixed;
-	z-index: 4;
+	z-index: 6;
 	left: 50%;
-	top: clamp(16px, 4vh, 40px);
+	top: clamp(64px, 10vh, 88px);   /* under the row of stage controls, never behind it */
 	transform: translate(-50%, -20px);
 	padding: 9px 18px;
 	border-radius: 999px;
@@ -274,6 +282,9 @@ a.stagebar__btn { text-decoration: none; }
 .curtain.is-error p { letter-spacing: 0.02em; text-transform: none; font-size: 1rem; max-width: 34ch; margin-inline: auto; line-height: 1.5; }
 
 .noscript { position: fixed; inset: auto 0 40% 0; text-align: center; z-index: 20; }
+
+/* Six controls in the row: the key hints go first, so the row never reaches the title. */
+@media (max-width: 1280px) { .stagebar__btn kbd { display: none; } }
 
 @media (max-width: 860px) {
 	.pairing, .pairing.is-live { width: min(240px, 44vw); }

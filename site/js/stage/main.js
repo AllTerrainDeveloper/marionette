@@ -8,6 +8,8 @@ import { MODES } from '../shared/modes.js';
 import { encodeState, decodeInput, seqNewer, PROTOCOL_VERSION } from '../shared/protocol.js';
 import { HostLink } from '../shared/net.js';
 import { marionetteRig } from '../shared/marionette.js';
+import { createLinkMenu, linkAt, linkState } from '../shared/link-menu.js';
+import { dragPoint } from '../studio/orbit.js';
 import { createWorld, bootError } from './world.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -86,7 +88,7 @@ async function boot() {
 		pairing.classList.toggle('is-live', n > 0 && !slots.some((s) => s.el.classList.contains('is-featured')));
 		modeLabel.textContent = n ? controller.mode.title : 'Waiting in the wings';
 		phonesLabel.textContent = n === 0
-			? 'No puppeteer yet — the puppet is rehearsing on its own'
+			? 'No puppeteer yet — the puppet is rehearsing on its own · drag a string to move it, or click it'
 			: n === 1 ? 'One puppeteer on the strings' : 'Pro: two puppeteers, one on each bar';
 	}
 
@@ -98,6 +100,7 @@ async function boot() {
 	/** Rest pose, strings re-tied, joints unlocked — and every phone but the one that asked lets go of what it holds. */
 	function resetPuppet(from = -1) {
 		controller.setLocks([]);
+		letGoAll();
 		world.reset();
 		broadcast({ t: 'reset' }, from);
 		toast('Puppet reset');
@@ -124,6 +127,21 @@ async function boot() {
 		// (?knots tries it for this visit only; the button is what is remembered.)
 		if (asked.has('knots') ? asked.get('knots') !== '0' : stored === '1') setKnots(true, true, false);
 	}
+
+	// Wrapping: strings and rods catching on the puppet's limbs. On unless switched off (the
+	// button, W); remembered on this device, and the editor and the Studio follow it.
+	const wrapButton = $('#btn-wrap');
+	function showWrap() {
+		wrapButton.setAttribute('aria-pressed', world.wrap);
+		$('#btn-wrap-label').textContent = world.wrap ? 'Wrap on' : 'Wrap off';
+	}
+	wrapButton.addEventListener('click', () => {
+		world.setWrap(!world.wrap);
+		showWrap();
+		broadcast({ t: 'wrap', on: world.wrap });
+		toast(world.wrap ? 'Strings and rods catch on the limbs again' : 'Strings and rods pass straight through the limbs');
+	});
+	showWrap();
 
 	// Bare stage: tickets, titles and the playbill step out; a faint eye in the corner brings them back.
 	const uiButton = $('#btn-ui');
@@ -154,10 +172,11 @@ async function boot() {
 		};
 		link.onopen = () => {
 			controller.connect(s.slot);
+			releaseLink();   // the strings are the puppeteer's now
 			s.seq = -1; s.got = false;
 			s.el.classList.add('is-paired');
 			s.state.textContent = 'Connected';
-			link.send({ ...peers(), t: 'welcome', v: PROTOCOL_VERSION, slot: s.slot, mode: controller.mode.id, custom: controller.custom, locks: [...controller.locks], strings: world.rig.strings });
+			link.send({ ...peers(), t: 'welcome', v: PROTOCOL_VERSION, slot: s.slot, mode: controller.mode.id, custom: controller.custom, locks: [...controller.locks], strings: world.rig.strings, model: world.puppet.model, wrap: world.wrap });
 			broadcast(peers(), s.slot);
 			if (controller.phones === 1) controller.play('greet');
 			toast(`${ROLE_NAMES[s.slot]} has taken the strings`);
@@ -211,6 +230,125 @@ async function boot() {
 	}
 	refreshHud();
 
+	// ------------------------------------------------ working a link by hand
+	// While no phone holds the strings, the mouse can: drag a string or rod and its handle
+	// follows; click one and a menu opens on it to lift it, carry it to the side or forward,
+	// pull it short, tug it, cut it or let it go. (What a link *is* — string, rod, its slack —
+	// is the Marionette editor's business; the menu has a way there.)
+	const canvas = $('#stage');
+	const menu = createLinkMenu();
+	const bodyLabel = (id) => id.replace(/([a-z])([LR])$/, (_, a, side) => `${a}, ${side === 'L' ? 'left' : 'right'}`).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+	const free = () => controller.phones === 0;
+	const REACH = { x: [-0.7, 0.7], y: [-0.5, 0.8], z: [-0.7, 0.7] };
+	const held = new Map();    // handle id → [x, y, z] it is held from where it hangs, in metres
+	const pulls = new Map();   // link id → metres it is pulled short
+	const tugs = new Map();    // handle id → seconds of tug left
+	const holding = () => held.size > 0 || pulls.size > 0 || tugs.size > 0;
+	/** The mouse's hand on the handles, each physics step. The bar goes on drifting as it does when nobody holds it. */
+	function hand(add, dt) {
+		controller._idle(add);
+		controller.nextIdle = Math.max(controller.nextIdle, controller.t + 6);   // no waving of its own while it is being worked
+		for (const [id, at] of held) { add(`handle.${id}.x`, at[0]); add(`handle.${id}.y`, at[1]); add(`handle.${id}.z`, at[2]); }
+		for (const [id, by] of pulls) add(`pull.${id}`, by);
+		for (const [id, left] of tugs) {
+			add(`handle.${id}.y`, 0.2 * Math.sin(Math.PI * (1 - left / 0.45)));
+			if (left - dt <= 0) tugs.delete(id); else tugs.set(id, left - dt);
+		}
+		if (!holding()) controller.director = null;
+	}
+	function hold(handle, axis, value) {
+		const at = held.get(handle) || [0, 0, 0];
+		const lim = REACH['xyz'[axis]];
+		at[axis] = Math.max(lim[0], Math.min(lim[1], value));
+		if (at.some((v) => Math.abs(v) > 1e-4)) held.set(handle, at); else held.delete(handle);
+		controller.director = hand;
+	}
+	function pull(id, by) {
+		if (by > 1e-4) pulls.set(id, by); else pulls.delete(id);
+		controller.director = hand;
+	}
+	/** Every handle back where it hangs. */
+	function letGoAll() {
+		held.clear(); pulls.clear(); tugs.clear();
+		controller.director = null;
+	}
+	function releaseLink() {
+		menu.close();
+		letGoAll();
+		canvas.classList.remove('is-over', 'is-dragging');
+	}
+	function showLinkMenu(index, at) {
+		const s = world.rig.strings[index];
+		if (!s || !free()) { menu.close(); return; }
+		world.selected = new Set([index]);
+		const rod = s.kind === 'rod';
+		const handle = RIG.handles.find((h) => h.id === s.handle);
+		const now = held.get(s.handle) || [0, 0, 0];
+		const move = (label, axis, title) => ({ label, unit: 'cm', value: now[axis], scale: 100, step: 0.005, min: REACH['xyz'[axis]][0], max: REACH['xyz'[axis]][1], title: `${title} Double-click to put back.`, set: (v) => hold(s.handle, axis, v) });
+		const others = held.size + pulls.size > (held.has(s.handle) || pulls.has(s.id) ? 1 : 0);
+		menu.open({
+			title: s.label,
+			sub: `${handle ? handle.label : s.handle} handle → ${bodyLabel(s.body)}`,
+			live: () => { const live = sim.strings[index]; return live && live.def.id === s.id ? linkState(live, sim.tension[index]) : { text: '…' }; },
+			ranges: [
+				move('Lift', 1, 'Raise the handle, or lower it past where it hangs.'),
+				move('Side', 0, 'Carry the handle towards the puppet’s left (+) or right (−).'),
+				move('Forward', 2, 'Carry the handle towards the audience (+) or the back (−).'),
+				!rod && { label: 'Pull', unit: 'cm', value: pulls.get(s.id) || 0, scale: 100, step: 0.005, min: 0, max: 0.75, title: 'Take the string up short through the handle. Double-click to put back.', set: (v) => pull(s.id, v) },
+			].filter(Boolean),
+			actions: [
+				{ label: 'Tug', title: 'A quick pull up and back', run: () => { tugs.set(s.handle, 0.45); controller.director = hand; return true; } },
+				{ label: 'Let go', title: 'This handle back where it hangs', run: () => { held.delete(s.handle); pulls.delete(s.id); showLinkMenu(index); return true; } },
+				!rod && (sim.strings[index] && sim.strings[index].broken
+					? { label: 'Tie it again', title: 'Tie this cut string back on, with the puppet where it is', run: () => { world.retie(index); toast(`${s.label} tied again`); showLinkMenu(index); return true; } }
+					: { label: 'Cut it', title: 'Cut this string now. “Tie it again” here, or Reset, puts it back.', run: () => { const live = sim.strings[index]; if (live) live.broken = true; toast(`${s.label} cut`); showLinkMenu(index); return true; } }),
+				others && { label: 'Let go of all', title: 'Every handle back where it hangs', run: () => { letGoAll(); showLinkMenu(index); return true; } },
+				{ label: 'Change it in the editor', wide: true, title: 'String or rod, its slack, where it is tied: the Marionette editor', run: () => { location.href = `editor.html#link=${encodeURIComponent(s.id)}`; } },
+			].filter(Boolean),
+			note: 'Or drag the string itself. Here while no phone holds the strings.',
+			onClose: () => { world.selected = null; },
+		}, at);
+	}
+	{
+		const over = (e) => (free() ? linkAt(e, strings, stage.camera, canvas) : -1);
+		const grip = new THREE.Vector3(), from = new THREE.Vector3(), to = new THREE.Vector3();
+		let press = null;
+		canvas.addEventListener('pointerdown', (e) => {
+			const index = e.button === 0 ? over(e) : -1;
+			press = { x: e.clientX, y: e.clientY, index, moved: false };
+			if (index < 0) return;
+			const def = world.rig.strings[index];
+			const h = RIG.handles.findIndex((x) => x.id === def.handle);
+			grip.set(sim.handlePos[h * 3], sim.handlePos[h * 3 + 1], sim.handlePos[h * 3 + 2]);
+			press.handle = def.handle;
+			press.start = [...(held.get(def.handle) || [0, 0, 0])];
+			press.ok = !!dragPoint(e, stage.camera, canvas, grip, from);
+			try { canvas.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
+		});
+		canvas.addEventListener('pointermove', (e) => {
+			if (!press || !e.buttons) { canvas.classList.toggle('is-over', over(e) >= 0); return; }
+			if (press.index < 0 || !press.ok || !free()) return;
+			if (!press.moved && Math.hypot(e.clientX - press.x, e.clientY - press.y) <= 4) return;
+			press.moved = true;
+			canvas.classList.add('is-dragging');
+			world.selected = new Set([press.index]);
+			if (!dragPoint(e, stage.camera, canvas, grip, to)) return;
+			hold(press.handle, 0, press.start[0] + to.x - from.x);
+			hold(press.handle, 1, press.start[1] + to.y - from.y);
+			hold(press.handle, 2, press.start[2] + to.z - from.z);
+		});
+		const lift = (e) => {
+			const was = press; press = null;
+			canvas.classList.remove('is-dragging');
+			if (!was || was.index < 0) return;
+			if (was.moved) { world.selected = null; toast('Held there · click the string to move it more, or to let go'); return; }
+			if (e.type === 'pointerup') showLinkMenu(was.index, [e.clientX, e.clientY]);
+		};
+		canvas.addEventListener('pointerup', lift);
+		canvas.addEventListener('pointercancel', lift);
+		canvas.addEventListener('contextmenu', (e) => { const hit = over(e); if (hit < 0) return; e.preventDefault(); showLinkMenu(hit, [e.clientX, e.clientY]); });
+	}
+
 	// ----------------------------------------------------------- snapshots
 	let seq = 0;
 	function sendSnapshots() {
@@ -236,6 +374,7 @@ async function boot() {
 		if (e.target instanceof HTMLInputElement) return;
 		if (e.key === 'r') resetPuppet();
 		if (e.key === 'k' && !e.repeat) knotsButton.click();
+		if (e.key === 'w' && !e.repeat) wrapButton.click();
 		if (e.key === 'h' && !e.repeat) uiButton.click();
 		if (e.key === 'q') { stage.setQuality((stage.quality + 2) % 3); resize(); toast(`Quality: ${['low', 'medium', 'high'][stage.quality]}`); }
 		if (e.key === 'd') fpsEl.hidden = !fpsEl.hidden;
@@ -245,7 +384,7 @@ async function boot() {
 	});
 
 	// Handy for the browser console and automated checks.
-	window.motionPuppet = { sim, controller, stage, slots, puppet, strings, tuning, THREE };
+	window.motionPuppet = { world, sim, controller, stage, slots, puppet, strings, tuning, THREE, menu, showLinkMenu, held, pulls, hold };
 
 	// Debug mode: add ?debug (or ?debug=<routine>) to the stage URL for predefined movement
 	// routines that play the puppet without a phone. Loaded only when asked for.
