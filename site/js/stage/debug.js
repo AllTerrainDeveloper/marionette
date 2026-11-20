@@ -195,7 +195,7 @@ export function startDebug(app, initial) {
 		puppet.root.updateMatrixWorld(true);
 		let worst = 0, where = '';
 		for (const item of strings.items) {
-			if (!item.points || item.def.enabled === false) continue;
+			if (!item.points || item.def.enabled === false || item.rod) continue;   // a rod is not kept out of the wood: it is not counted
 			for (let k = 0; k < item.points.length - 1; k++) {
 				const p = new THREE.Vector3(...item.points[k]), q = new THREE.Vector3(...item.points[k + 1]);
 				const L = p.distanceTo(q);

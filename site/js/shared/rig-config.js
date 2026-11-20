@@ -162,7 +162,7 @@ export const RIG = {
 export const indexById = (list) => Object.fromEntries(list.map((item, i) => [item.id, i]));
 
 /** Deep-copies the string table so a mode or custom rig can edit it freely. */
-export const cloneStrings = (strings = STRINGS) => strings.map((s) => ({ ...s, at: [...s.at] }));
+export const cloneStrings = (strings = STRINGS) => strings.map((s) => ({ ...s, at: [...s.at], ...(s.out ? { out: [...s.out] } : {}) }));
 
 /** Rest world position of a string's attachment point. */
 export function restAttach(string, bodies = BODIES) {

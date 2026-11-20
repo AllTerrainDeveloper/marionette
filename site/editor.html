@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Marionette editor — Motion Puppet</title>
+	<meta name="description" content="String the marionette: choose which links are strings and which are rods, and try the result on the real physics.">
+	<meta name="theme-color" content="#0a0507">
+	<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23160b0d'/%3E%3Cpath d='M12 14h40M32 8v12M18 14v18M46 14v18M32 20v8' stroke='%23d9a441' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='32' cy='36' r='8' fill='%23e8b98a'/%3E%3Crect x='24' y='45' width='16' height='13' rx='4' fill='%231f6f6b'/%3E%3C/svg%3E">
+	<link rel="stylesheet" href="css/studio.css">
+	<script type="importmap">
+	{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/three-addons/" } }
+	</script>
+</head>
+<body>
+	<div class="app">
+		<header class="topbar">
+			<div class="topbar__brand"><b>Motion Puppet</b><span>Marionette</span></div>
+			<input class="topbar__name" id="name" type="text" maxlength="40" aria-label="Name of this marionette" spellcheck="false">
+			<span class="topbar__gap"></span>
+			<span class="topbar__saved" id="saved" aria-live="polite"></span>
+			<button class="btn" id="btn-import" type="button">Import</button>
+			<button class="btn" id="btn-export" type="button">Export</button>
+			<button class="btn btn--danger" id="btn-default" type="button" title="Back to the twelve default strings">Restore default</button>
+			<nav aria-label="Motion Puppet">
+				<a href="./">Stage</a>
+				<a href="editor.html" aria-current="page">Marionette</a>
+				<a href="studio.html">Studio</a>
+			</nav>
+		</header>
+		<main class="view" id="view">
+			<canvas id="stage" aria-label="The marionette, its control bars and its strings and rods"></canvas>
+			<div class="view__tools">
+				<button class="btn" id="btn-reset" type="button" title="Stand the puppet back up (R)">Reset puppet</button>
+				<button class="btn" id="btn-slow" type="button" aria-pressed="false" title="Quarter speed">Slow motion</button>
+				<button class="btn" id="btn-view" type="button" title="Back to the audience's view">Front view</button>
+			</div>
+			<div class="view__tag" id="tag" hidden></div>
+			<p class="view__hint">Click a string or rod to select it · drag to look round · right-drag to slide · wheel to zoom</p>
+		</main>
+		<aside class="side" id="side" aria-label="Stringing"></aside>
+	</div>
+
+	<div class="toast" id="toast" role="status" aria-live="polite"></div>
+	<div class="curtain" id="curtain">
+		<div>
+			<h1>Marionette editor</h1>
+			<p id="curtain-text">Carving the puppet…</p>
+		</div>
+	</div>
+	<noscript><p style="position:fixed;inset:0;display:grid;place-items:center">This page needs JavaScript and WebGL.</p></noscript>
+	<script type="module" src="js/studio/editor.js"></script>
+</body>
+</html>

@@ -247,10 +247,15 @@ export class PuppetSim {
 			// The string is tied to a screw eye on the surface, not to a point inside the wood.
 			const at = effectiveAttach(def, rig.bodies, this.wrapProxies);
 			const restAttach = M.add(rig.bodies[body].pos, at);
-			const rest = Number.isFinite(def.length) ? def.length : M.dist(restHandle, restAttach) + (def.slack || 0);
+			// A rod (`kind: 'rod'`) is a stiff wire: it has no slack, pushes as well as pulls, and
+			// goes straight from its handle to its eye.
+			const rod = def.kind === 'rod';
+			const rest = Number.isFinite(def.length) ? def.length : M.dist(restHandle, restAttach) + (rod ? 0 : def.slack || 0);
 			const excluded = stringExclusions(def, at, rig.bodies, this.wrapProxies);
 			const force = new StringForce(rig.bodies[body].mass / (this.dt * this.dt));
-			this.strings.push({ def, body, handle, at, rest, excluded, force, local: M.sub(at, this.bodies[body].localCom), tension: 0, broken: false, over: 0, path: null, memory: {} });
+			force.rigid = rod;
+			const local = M.sub(at, this.bodies[body].localCom);
+			this.strings.push({ def, rod, body, handle, at, rest, excluded, force, local, straight: [{ body, local }], tension: 0, broken: false, over: 0, path: null, memory: {} });
 		}
 		this.tension = new Float32Array(this.strings.length);
 	}
@@ -383,7 +388,13 @@ export class PuppetSim {
 		this.strings.forEach((s, i) => {
 			if (!s.def.enabled || s.broken || gain < 0.001) { s.path = null; s.nodes = s.base = null; s.force.release(); return; }
 			const handle = this.handleAt(s.handle);
-			if (reroute || !s.base) {
+			if (s.rod) {
+				// A rod does not bend round anything: handle to eye, whatever is in between.
+				const attach = M.add(this.bodyPos(s.body), M.qRot(this.bodyQuat(s.body), s.at));
+				s.path = { points: [handle, attach], bodies: [-1, s.body], length: M.dist(handle, attach) };
+				s.nodes = s.base = s.straight;
+				s.relay = false;
+			} else if (reroute || !s.base) {
 				const attach = M.add(this.bodyPos(s.body), M.qRot(this.bodyQuat(s.body), s.at));
 				const path = stringPath(handle, attach, frame || this._noBodies, s.excluded, undefined, s.memory);
 				if (path.length < 1e-6) { s.path = null; s.nodes = s.base = null; s.force.release(); return; }
@@ -424,11 +435,12 @@ export class PuppetSim {
 			// puppet lies on the floor) is taken in at a finite speed rather than in one step.
 			const target = Math.max(0.05, s.rest - c.pull[i]);
 			const from = s.force.active ? s.force.rest : s.path.length;
-			const rest = from > target ? Math.max(target, from - REEL_SPEED * this.dt) : target;
+			const rest = s.rod ? from + M.clamp(target - from, -REEL_SPEED * this.dt, REEL_SPEED * this.dt)
+				: from > target ? Math.max(target, from - REEL_SPEED * this.dt) : target;
 			// How much the handle's own motion and the reeling-in lengthen the path this step.
 			const first = nodes[0].body < 0 ? nodes[0].local : M.add(this.bodyCom(nodes[0].body), M.qRot(this.bodyQuat(nodes[0].body), nodes[0].local));
 			const h = s.handle * 3, d = M.norm(M.sub(first, handle));
-			const fresh = -(this.handleVel[h] * d[0] + this.handleVel[h + 1] * d[1] + this.handleVel[h + 2] * d[2]) * this.dt + (from > rest ? from - rest : 0);
+			const fresh = -(this.handleVel[h] * d[0] + this.handleVel[h + 1] * d[1] + this.handleVel[h + 2] * d[2]) * this.dt + (from > rest || s.rod ? from - rest : 0);
 			s.force.route(handle, nodes, rest, s.def.max * gain, fresh);
 			forces.push(s.force);
 		});
@@ -436,9 +448,10 @@ export class PuppetSim {
 
 	_afterStrings(dt) {
 		this.strings.forEach((s, i) => {
-			s.tension = s.force.active ? s.force.tension : 0;
+			s.tension = s.force.active ? Math.abs(s.force.tension) : 0;   // a rod's load counts whether it pulls or pushes
+			s.push = s.rod && s.force.active && s.force.tension < 0;
 			this.tension[i] = s.tension;
-			if (s.def.breakable && s.force.active && s.tension >= s.force.max * 0.98) {
+			if (s.def.breakable && !s.rod && s.force.active && s.tension >= s.force.max * 0.98) {
 				s.over += dt;
 				if (s.over > 0.2) s.broken = true;
 			} else {

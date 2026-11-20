@@ -119,6 +119,10 @@ export class Controller {
 		this.dropUntil = 0;
 		this.relaxUntil = 0;
 		this.gestures = [];
+		// A director is a function (add, dt) that writes targets itself, once per physics step:
+		// the Studio's timeline, the marionette editor's test bench. While one is set and no
+		// phone is connected, the idle animation keeps out of its way.
+		this.director = null;
 		this.nextIdle = 6;
 		this.locks = new Set();
 		this.custom = defaultCustomRig();
@@ -159,6 +163,12 @@ export class Controller {
 	setCustom(json) {
 		this.custom = sanitizeCustomRig(json, this.rig);
 		if (this.mode.custom) this._activate();
+	}
+
+	/** Restrings the puppet: a new string table for every mode but Custom Rig (which has its own). */
+	setRigStrings(strings) {
+		this.rig = { ...this.rig, strings };
+		this._activate();
 	}
 
 	_activate() {
@@ -257,7 +267,7 @@ export class Controller {
 		const devices = this.devices.filter(Boolean);
 		const pro = devices.length >= 2;
 		if (devices.length === 0) {
-			this._idle(add);
+			if (!this.director) this._idle(add);
 		} else {
 			cfg.mappings.forEach((m, index) => {
 				if ((m.when === 'solo' && pro) || (m.when === 'pro' && !pro)) return;
@@ -266,6 +276,8 @@ export class Controller {
 				add(m.dst, this.mapper.apply(m, index, this._source(d, m.src), dt));
 			});
 		}
+
+		if (this.director) this.director(add, dt);
 
 		this.gestures = this.gestures.filter((gesture) => {
 			const def = GESTURES[gesture.id];
