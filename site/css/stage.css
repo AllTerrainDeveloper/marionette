@@ -21,7 +21,8 @@ html, body {
 	overflow: hidden;
 }
 
-#stage.is-over { cursor: pointer; }
+#stage.is-over { cursor: grab; }
+#stage.is-dragging { cursor: grabbing; }
 #stage {
 	position: fixed;
 	inset: 0;

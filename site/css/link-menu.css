@@ -52,9 +52,14 @@
 	background: rgba(0, 0, 0, 0.4); color: #f4e9d2; font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; text-align: right;
 }
 
+.linkmenu__range { display: grid; grid-template-columns: 62px 1fr 52px; align-items: center; gap: 6px; }
+.linkmenu__range span { color: #cdbfa4; }
+.linkmenu__range input { width: 100%; margin: 0; accent-color: #e2b457; }
+.linkmenu__range em { color: #f4e9d2; font: 11.5px ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-style: normal; text-align: right; }
+
 .linkmenu__actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding-top: 8px; border-top: 1px solid rgba(226, 180, 87, 0.16); }
 .linkmenu__actions button { padding: 5px 8px; border: 1px solid rgba(226, 180, 87, 0.3); border-radius: 6px; background: rgba(255, 255, 255, 0.04); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.linkmenu__actions button:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.linkmenu__actions button.is-wide, .linkmenu__actions button:last-child:nth-child(odd) { grid-column: 1 / -1; }
 .linkmenu__actions button:hover { background: rgba(226, 180, 87, 0.18); }
 .linkmenu__actions button.is-danger { color: #ff9a85; border-color: rgba(255, 154, 133, 0.4); }
 .linkmenu__actions button.is-danger:hover { background: rgba(255, 154, 133, 0.16); }

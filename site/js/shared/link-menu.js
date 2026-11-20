@@ -66,14 +66,27 @@ function stepper({ label, unit = '', value, scale = 1, digits = 1, step, min, ma
 		make('em', { text: unit }));
 }
 
+/** A slider for something that is moved rather than set: how far a handle is held from where it hangs. */
+function range({ label, unit = '', value, scale = 1, digits = 0, step, min, max, title, set }) {
+	const input = make('input', { type: 'range', min, max, step, 'aria-label': `${label}${unit ? `, in ${unit}` : ''}` });
+	const out = make('em');
+	const show = () => { out.textContent = `${(+input.value * scale).toFixed(digits).replace(/^-0$/, '0')} ${unit}`; };
+	input.value = value;
+	input.addEventListener('input', () => { show(); set(+input.value); });
+	input.addEventListener('dblclick', () => { input.value = 0; show(); set(0); });
+	show();
+	return make('label.linkmenu__range', { title }, make('span', { text: label }), input, out);
+}
+
 /**
  * One menu for the page. `open(spec, at)` shows it at `at` ([x, y] in the window; where it
  * already is when left out) with:
  *   title, sub          the link's name, and where it runs
  *   kind                'string' | 'rod' | 'off', and onKind(kind) to change it
  *   live()              → { text, state } read a few times a second (what it is carrying), or null
+ *   ranges              [{ label, unit, value, scale, digits, step, min, max, title, set(value) }]   sliders, for moving
  *   numbers             [{ label, unit, value, scale, digits, step, min, max, title, set(value) }]
- *   actions             [{ label, title, danger, run() }]   (the menu closes unless run() returns true)
+ *   actions             [{ label, title, danger, wide, run() }]   (the menu closes unless run() returns true)
  *   note                a line of small print
  * It closes on Escape, on a press anywhere else, and when `close()` is called.
  */
@@ -111,8 +124,9 @@ export function createLinkMenu() {
 			spec.onKind && make('div.linkmenu__kinds', { role: 'group', 'aria-label': 'What this link is' }, KINDS.map(([id, label]) => make('button', {
 				type: 'button', text: label, 'data-kind': id, 'aria-pressed': String(spec.kind === id), onclick: () => spec.onKind(id),
 			}))),
+			(spec.ranges || []).map(range),
 			(spec.numbers || []).map(stepper),
-			spec.actions && make('div.linkmenu__actions', {}, spec.actions.map((a) => make(`button${a.danger ? '.is-danger' : ''}`, {
+			spec.actions && make('div.linkmenu__actions', {}, spec.actions.map((a) => make(`button${a.danger ? '.is-danger' : ''}${a.wide ? '.is-wide' : ''}`, {
 				type: 'button', text: a.label, title: a.title, onclick: () => { if (a.run() !== true) close(); },
 			}))),
 			spec.note && make('p.linkmenu__note', { text: spec.note }),
