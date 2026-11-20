@@ -110,6 +110,7 @@ async function boot() {
 	 */
 	function edit(id, values, done = true) {
 		const track = trackById(id);
+		if (playing) setPlaying(false);   // a change belongs to one moment: playback stops where it was made
 		values = values.map((v, n) => Math.max(track.channels[n].min, Math.min(track.channels[n].max, v)));
 		if (autoKey) { selKey = setKey(anim, id, time, values); held.delete(id); } else held.set(id, values);
 		if (selTrack !== id) selTrack = id;
