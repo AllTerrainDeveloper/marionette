@@ -134,7 +134,7 @@ function range({ label, unit = '', value, scale = 1, digits = 0, step, min, max,
  *   note                a line of small print
  *   anchor()            → [x, y] in the window: what the menu is about. A curved arrow runs from the menu to it.
  * The menu can be dragged by its head to wherever it is out of the way; it stays there while it is open.
- * It closes on Escape, on a press anywhere else, and when `close()` is called.
+ * It closes on Escape, on a click anywhere else (not a drag, and not on a camera control), and when `close()` is called.
  */
 export function createLinkMenu() {
 	const node = make('div.linkmenu', { role: 'dialog', 'aria-label': 'This link', hidden: '' });
@@ -248,7 +248,17 @@ export function createLinkMenu() {
 	node.addEventListener('pointerup', drop);
 	node.addEventListener('pointercancel', drop);
 
-	document.addEventListener('pointerdown', (e) => { if (!node.hidden && !node.contains(e.target)) close(); }, true);
+	// A click anywhere else closes it. Moving the camera does not: neither a drag (which is how a
+	// viewport is looked round) nor anything inside an element marked data-keeps-linkmenu (the
+	// stage's thumbstick, the editor's view buttons).
+	let away = null;
+	document.addEventListener('pointerdown', (e) => {
+		away = node.hidden || node.contains(e.target) || e.target.closest('[data-keeps-linkmenu]') ? null : [e.clientX, e.clientY];
+	}, true);
+	document.addEventListener('pointerup', (e) => {
+		const from = away; away = null;
+		if (from && !node.hidden && Math.hypot(e.clientX - from[0], e.clientY - from[1]) <= 4) close();
+	}, true);
 	window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !node.hidden) { e.stopPropagation(); close(); } }, true);
 	window.addEventListener('resize', close);
 

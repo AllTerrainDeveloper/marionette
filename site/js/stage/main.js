@@ -331,6 +331,7 @@ async function boot() {
 			if (!press || !e.buttons) { canvas.classList.toggle('is-over', over(e) >= 0); return; }
 			if (press.index < 0 || !press.ok || !free()) return;
 			if (!press.moved && Math.hypot(e.clientX - press.x, e.clientY - press.y) <= 4) return;
+			if (!press.moved) menu.close();   // the menu was about another moment
 			press.moved = true;
 			canvas.classList.add('is-dragging');
 			world.selected = new Set([press.index]);
