@@ -54,7 +54,7 @@ async function boot() {
 	const bodyLabel = (id) => id.replace(/([a-z])([A-Z])$/, '$1 $2').replace(/ L$/, ', left').replace(/ R$/, ', right').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
 	const handle = (id) => RIG.handles.find((h) => h.id === id);
 
-	let applyTimer = 0;
+	let applyTimer = 0, savedOk = true;
 	/** The table changed: restring the puppet (in a moment, so a dragged slider does not restring sixty times a second) and save. */
 	function changed(now = false) {
 		clearTimeout(applyTimer);
@@ -63,6 +63,7 @@ async function boot() {
 			world.setStrings(doc.strings);
 			const isDefault = JSON.stringify(doc.strings) === JSON.stringify(sanitizeStrings(cloneStrings(), RIG)) && doc.name === 'My marionette';
 			const ok = saveMarionette(isDefault ? null : marionetteDocument(doc.name, doc.strings));
+			savedOk = ok;
 			const rods = doc.strings.filter((s) => kindOf(s) === 'rod').length, strings = doc.strings.filter((s) => kindOf(s) === 'string').length;
 			$('saved').textContent = !ok ? 'This browser would not save it' : isDefault ? 'The default stringing' : `Saved here · ${strings} string${strings === 1 ? '' : 's'}, ${rods} rod${rods === 1 ? '' : 's'} · the stage and the Studio use it`;
 		};
@@ -232,7 +233,12 @@ async function boot() {
 	$('btn-default').addEventListener('click', () => {
 		doc.name = 'My marionette'; doc.strings = cloneStrings(); nameInput.value = doc.name;
 		changed(true); select(0); world.reset();
-		toast('Back to the twelve default strings');
+		toast('Default marionette loaded: the twelve strings');
+	});
+	$('btn-stage').addEventListener('click', () => {
+		changed(true);   // anything still waiting on a dragged slider is saved before leaving
+		if (!savedOk) { toast('This browser would not save it, so the stage cannot use it. Export it instead.'); return; }
+		location.href = './';
 	});
 	window.addEventListener('keydown', (e) => {
 		if (typing(e) || e.metaKey || e.ctrlKey) return;

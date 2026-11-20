@@ -38,7 +38,7 @@ The panel also shows live measurements against the rendered meshes (how much str
 
 Open `editor.html` (or press **Marionette** on the stage). Click a link in the list or in the viewport, then choose **String**, **Rod** or **Off** (keys `s`, `d`, `x`; arrows move through the list). *Start from* has three traditional stringings: all strings, a head rod, and head and hand rods. The selected link can be renamed, hung from another handle, tied to another part, given more or less slack (strings) and a different strength. *Try it* works the control bars — rock, bow, lift and lower, hands, march, shake — so the difference shows: lower the bar and a string goes slack where a rod pushes. Drag to look round, right-drag to slide, wheel to zoom.
 
-The stringing is saved in this browser (`localStorage`, key `motion-puppet-marionette`) and can be exported and imported as JSON. The stage and the Studio use it from then on, and a phone that joins is told how the puppet is strung; **Restore default** goes back to the twelve strings.
+The stringing is saved in this browser (`localStorage`, key `motion-puppet-marionette`) and can be exported and imported as JSON. The stage and the Studio use it from then on, and a phone that joins is told how the puppet is strung; **Use on stage** saves it and opens the stage with it, and **Load default** goes back to the twelve strings.
 
 ### The Studio
 
