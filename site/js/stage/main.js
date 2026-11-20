@@ -10,6 +10,7 @@ import { HostLink } from '../shared/net.js';
 import { marionetteRig } from '../shared/marionette.js';
 import { createLinkMenu, linkAt, linkState } from '../shared/link-menu.js';
 import { dragPoint } from '../studio/orbit.js';
+import { createOrbitStick } from './orbit-stick.js';
 import { createWorld, bootError } from './world.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -349,6 +350,10 @@ async function boot() {
 		canvas.addEventListener('contextmenu', (e) => { const hit = over(e); if (hit < 0) return; e.preventDefault(); showLinkMenu(hit, [e.clientX, e.clientY]); });
 	}
 
+	// A thumbstick in the corner takes the camera round the puppet; the theatre's own framing is what it turns.
+	const orbit = createOrbitStick(stage, THREE);
+	world.onFrame = (dt) => orbit.apply(dt);
+
 	// ----------------------------------------------------------- snapshots
 	let seq = 0;
 	function sendSnapshots() {
@@ -376,6 +381,7 @@ async function boot() {
 		if (e.key === 'k' && !e.repeat) knotsButton.click();
 		if (e.key === 'w' && !e.repeat) wrapButton.click();
 		if (e.key === 'h' && !e.repeat) uiButton.click();
+		if (e.key === '0') orbit.reset();
 		if (e.key === 'q') { stage.setQuality((stage.quality + 2) % 3); resize(); toast(`Quality: ${['low', 'medium', 'high'][stage.quality]}`); }
 		if (e.key === 'd') fpsEl.hidden = !fpsEl.hidden;
 		if (e.key === 'f' && document.documentElement.requestFullscreen) {
@@ -384,7 +390,7 @@ async function boot() {
 	});
 
 	// Handy for the browser console and automated checks.
-	window.motionPuppet = { world, sim, controller, stage, slots, puppet, strings, tuning, THREE, menu, showLinkMenu, held, pulls, hold };
+	window.motionPuppet = { world, sim, controller, stage, slots, puppet, strings, tuning, THREE, menu, orbit, showLinkMenu, held, pulls, hold };
 
 	// Debug mode: add ?debug (or ?debug=<routine>) to the stage URL for predefined movement
 	// routines that play the puppet without a phone. Loaded only when asked for.

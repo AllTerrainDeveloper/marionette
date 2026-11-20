@@ -77,6 +77,7 @@ Nothing is posed directly: a key is a target for the control layer, exactly what
 | `site/js/stage/avbd.js` | The physics solver: Augmented Vertex Block Descent for rigid bodies — joints with limits and motors, frictional contacts, inextensible strings. No dependencies. |
 | `site/js/stage/sim.js` | The puppet on that solver: control rig, string routing, contact detection, IK, balance, safety guards. |
 | `site/js/shared/gestures.js` | The one-tap moves (bow, wave, cheer, salute, kicks…), shared by the stage that plays them and the phone that lists them. They take turns: tapping a new one makes the one playing bow out over a third of a second (stacked, they threw the puppet about). |
+| `site/js/stage/orbit-stick.js` | The stage camera's thumbstick: a faint joystick in the bottom-left corner. Hold and push to carry the camera round the puppet and over it (as far as the curtains leave it in view), `+` / `−` to move in and out, double-click, `⟲` or `0` to put the view back. |
 | `site/js/stage/world.js` | The puppet's world as every desktop page shows it: simulation, control layer, theatre, meshes, strings, and the loop that steps the physics and draws a frame. The stage, the Marionette editor and the Studio are all built on it. |
 | `site/js/shared/marionette.js` | The saved marionette (model, strings and rods) and the eight traditional stringings. |
 | `site/js/shared/timeline.js` | The Studio's keyframe engine: tracks, keys, `cubic-bezier` easing, Bezier paths, sampling. Plain data, no DOM. |

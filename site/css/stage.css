@@ -223,12 +223,72 @@ a.stagebar__btn { text-decoration: none; }
 .is-bare #btn-ui:hover, .is-bare #btn-ui:focus-visible { opacity: 1; background: rgba(20, 10, 9, 0.72); border-color: rgba(226, 180, 87, 0.35); }
 .is-bare #btn-ui span, .is-bare #btn-ui kbd, .is-bare .stagebar__slash { display: none; }
 
+/* --- the camera's thumbstick ------------------------------------------- */
+
+.orbit {
+	position: fixed;
+	z-index: 3;
+	left: clamp(14px, 2.4vw, 36px);
+	bottom: clamp(14px, 3vh, 30px);
+	display: flex;
+	align-items: flex-end;
+	gap: 8px;
+	opacity: 0.42;
+	transition: opacity 0.25s;
+	user-select: none;
+	-webkit-user-select: none;
+}
+.orbit:hover, .orbit:focus-within, .orbit.is-held { opacity: 0.95; }
+.orbit__pad {
+	position: relative;
+	width: 92px;
+	height: 92px;
+	border-radius: 50%;
+	background: radial-gradient(circle, rgba(244, 233, 210, 0.1) 0 38%, rgba(20, 10, 9, 0.5) 100%);
+	border: 1.5px solid rgba(244, 233, 210, 0.55);
+	box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+	touch-action: none;
+	cursor: grab;
+}
+.orbit.is-held .orbit__pad { cursor: grabbing; border-color: var(--gold); }
+.orbit__pad:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+.orbit__pad i {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	width: 40px;
+	height: 40px;
+	margin: -20px 0 0 -20px;
+	border-radius: 50%;
+	background: radial-gradient(circle at 35% 30%, #fff6df, #e2b457 70%);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+	transition: transform 0.16s ease-out;
+	pointer-events: none;
+}
+.orbit.is-held .orbit__pad i { transition: none; }
+.orbit__zoom { display: flex; flex-direction: column; gap: 5px; }
+.orbit__zoom button {
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	border-radius: 50%;
+	border: 1.5px solid rgba(244, 233, 210, 0.55);
+	background: rgba(20, 10, 9, 0.5);
+	color: var(--cream);
+	font: 600 15px/1 var(--sans);
+	cursor: pointer;
+}
+.orbit__zoom button:hover { border-color: var(--gold); color: var(--gold); }
+.orbit__zoom button[hidden] { display: none; }
+.is-bare .orbit { opacity: 0.22; }
+.is-bare .orbit:hover, .is-bare .orbit.is-held { opacity: 0.9; }
+
 /* --- playbill ---------------------------------------------------------- */
 
 .playbill {
 	position: fixed;
 	z-index: 2;
-	left: clamp(16px, 3vw, 44px);
+	left: calc(clamp(14px, 2.4vw, 36px) + 144px);   /* beside the camera's thumbstick */
 	bottom: clamp(14px, 3vh, 30px);
 	display: flex;
 	flex-wrap: wrap;
