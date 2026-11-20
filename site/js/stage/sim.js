@@ -88,7 +88,7 @@ export class PuppetSim {
 			impulses: [],
 		};
 
-		this.wrapProxies = buildWrapProxies(rig.bodies);
+		this.wrapProxies = buildWrapProxies(rig.bodies, rig.shapes || SHAPES);
 		this._wrapFrame = [];
 		this._noBodies = [];
 		this._v = [0, 0, 0];
@@ -118,7 +118,7 @@ export class PuppetSim {
 		this.bodies = rig.bodies.map((def, index) => {
 			const rb = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(def.pos[0], def.pos[1], def.pos[2]).setCanSleep(false));
 			const shapes = [];
-			for (const piece of SHAPES[def.id] || []) {
+			for (const piece of (rig.shapes || SHAPES)[def.id] || []) {
 				const points = surfacePoints(piece);
 				const desc = R.ColliderDesc.convexHull(new Float32Array(points));
 				if (!desc) continue;

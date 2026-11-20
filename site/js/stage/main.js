@@ -157,7 +157,7 @@ async function boot() {
 			s.seq = -1; s.got = false;
 			s.el.classList.add('is-paired');
 			s.state.textContent = 'Connected';
-			link.send({ ...peers(), t: 'welcome', v: PROTOCOL_VERSION, slot: s.slot, mode: controller.mode.id, custom: controller.custom, locks: [...controller.locks], strings: world.rig.strings });
+			link.send({ ...peers(), t: 'welcome', v: PROTOCOL_VERSION, slot: s.slot, mode: controller.mode.id, custom: controller.custom, locks: [...controller.locks], strings: world.rig.strings, model: world.puppet.model });
 			broadcast(peers(), s.slot);
 			if (controller.phones === 1) controller.play('greet');
 			toast(`${ROLE_NAMES[s.slot]} has taken the strings`);

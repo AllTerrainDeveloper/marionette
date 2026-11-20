@@ -46,16 +46,72 @@ export function openJson(use) {
 	input.click();
 }
 
-/** A labelled slider with its value beside it. Returns { row, set(value) }. */
-export function slider(label, { min, max, step = 0.01, value = 0, format = (v) => v.toFixed(2), oninput, onchange }) {
-	const out = el('output');
-	const input = el('input', { type: 'range', min, max, step, 'aria-label': label });
-	const show = (v) => { out.textContent = format(v); };
-	input.value = value;
-	show(+value);
-	input.addEventListener('input', () => { show(+input.value); if (oninput) oninput(+input.value); });
-	input.addEventListener('change', () => { if (onchange) onchange(+input.value); });
-	return { row: el('label.field', {}, el('span', { text: label }), input, out), input, set(v) { if (document.activeElement !== input) input.value = v; show(+v); } };
+/** A number as it is shown in a number box: `digits` decimals, and up to two more if the value really has them. */
+export function showNumber(v, digits = 2) {
+	const fixed = v.toFixed(digits);
+	if (Math.abs(+fixed - v) < 1e-9) return fixed;
+	return String(+v.toFixed(digits + 2));
+}
+
+/** Reads what was typed into a number box ("1,5", " 12 cm", "-.4"); NaN if it is no number. */
+export function readNumber(text) {
+	const match = String(text).replace(',', '.').match(/-?(\d+\.?\d*|\.\d+)(e-?\d+)?/i);
+	return match ? parseFloat(match[0]) : NaN;
+}
+
+/**
+ * A labelled slider with a number box beside it, so a value can be dragged roughly or typed
+ * exactly. The slider moves in `step`s between `min` and `max`; the box takes any value between
+ * `hardMin` and `hardMax` (the slider's ends unless given), is not rounded to the step, and
+ * steps with ↑ ↓ (Shift: ten steps, Alt: a tenth of one). Shown as value × `scale` with
+ * `digits` decimals and a `unit`. Double-clicking the label goes back to `reset`.
+ * Returns { row, input, box, set(value), value }.
+ */
+export function slider(label, { min, max, step = 0.01, value = 0, unit = '', scale = 1, digits = 2, hardMin = min, hardMax = max, reset, title, oninput, onchange }) {
+	let current = +value, dirty = false;
+	const input = el('input', { type: 'range', min, max, step, 'aria-label': label, tabIndex: -1 });
+	const box = el('input', { type: 'text', inputMode: 'decimal', autocomplete: 'off', spellcheck: false, 'aria-label': unit ? `${label} (${unit})` : label, title: `Type an exact value · ↑ ↓ to step · Shift ×10 · Alt ÷10` });
+	const clamp = (v) => Math.max(hardMin, Math.min(hardMax, v));
+	const show = () => { input.value = current; box.value = showNumber(current * scale, digits); };
+	const put = (v, final) => {
+		const next = clamp(v);
+		const moved = next !== current;
+		current = next;
+		if (moved && oninput) oninput(current);
+		if (moved) dirty = true;
+		if (final && dirty) { dirty = false; if (onchange) onchange(current); }
+	};
+	show();
+	input.addEventListener('input', () => { put(+input.value, false); box.value = showNumber(current * scale, digits); });
+	input.addEventListener('change', () => put(+input.value, true));
+	const commit = () => {
+		const typed = readNumber(box.value);
+		if (Number.isFinite(typed)) put(typed / scale, true);
+		show();
+	};
+	box.addEventListener('focus', () => box.select());
+	box.addEventListener('blur', commit);
+	box.addEventListener('keydown', (e) => {
+		if (e.key === 'Enter') { commit(); box.select(); e.preventDefault(); }
+		else if (e.key === 'Escape') { show(); box.blur(); }
+		else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+			e.preventDefault();
+			const typed = readNumber(box.value);
+			const from = Number.isFinite(typed) ? typed / scale : current;
+			const by = step * (e.shiftKey ? 10 : e.altKey ? 0.1 : 1) * (e.key === 'ArrowUp' ? 1 : -1);
+			put(+(from + by).toFixed(10), false);
+			show();
+			box.select();
+		}
+	});
+	const name = el('span.field__label', { text: label, title: title || (reset !== undefined ? 'Double-click to put back' : undefined) });
+	if (reset !== undefined) name.addEventListener('dblclick', () => { put(reset, true); show(); });
+	const row = el('div.field.field--num', {}, name, input, el('span.numbox', {}, box, unit && el('i', { text: unit })));
+	return {
+		row, input, box,
+		get value() { return current; },
+		set(v) { current = +v; if (document.activeElement !== box) show(); else input.value = current; },
+	};
 }
 
 /** True while typing somewhere a keyboard shortcut should leave alone. */

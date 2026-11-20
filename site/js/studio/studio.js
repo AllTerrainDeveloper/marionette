@@ -454,7 +454,8 @@ async function boot() {
 		const turn = (id) => id === 'yaw' || id === 'pitch' || id === 'roll';
 		sliders = track.channels.map((c, n) => slider(c.label, {
 			min: c.min, max: c.max, step: c.step, value: values[n],
-			format: (v) => (c.id === 'fov' ? `${v.toFixed(1)}°` : turn(c.id) ? `${(v * 57.2958).toFixed(0)}°` : `${v.toFixed(2)} m`),
+			...(c.id === 'fov' ? { unit: '°', digits: 1 } : turn(c.id) ? { unit: '°', scale: 57.29578, digits: 1 } : { unit: 'm', digits: 3 }),
+			reset: track.rest ? track.rest[n] : undefined,
 			oninput: (v) => { const now = valuesOf(selTrack); now[n] = v; edit(selTrack, now, false); },
 			onchange: () => commit(),
 		}));
@@ -496,7 +497,7 @@ async function boot() {
 				: el('p', { style: 'margin:10px 0 6px', text: 'Easing from this key to the next' }),
 			el('div.ease', {}, graph, el('div', {}, presets, valueEl)),
 			track.paths.length > 0 && slider('Path roundness', {
-				min: 0, max: 2, step: 0.05, value: key.curve ?? 1, format: (v) => (v === 0 ? 'corner' : v.toFixed(2)),
+				min: 0, max: 2, step: 0.05, value: key.curve ?? 1, digits: 2, reset: 1, title: '0 makes a corner, 1 a natural curve, 2 a wide one. Double-click to put back.',
 				oninput: (v) => { key.curve = v; pathStale = true; }, onchange: () => commit(),
 			}).row,
 			el('div.row', { style: 'margin-top:10px' }, el('button.btn.btn--danger', { type: 'button', text: 'Remove key', title: 'Delete', onclick: removeSelectedKey })));

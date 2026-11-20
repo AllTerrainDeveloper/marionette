@@ -23,7 +23,8 @@ const PHYSICS_MAX_MS = 9;      // never spend more than this on physics, however
 
 /**
  * Builds the world on a canvas. Options:
- *   rig            the puppet (defaults to the built-in rig; pass one with another string table)
+ *   rig            the puppet (defaults to the built-in rig; pass one with another string table,
+ *                  or with `model` and `shapes` for another puppet on the same skeleton)
  *   size           () => [width, height] of the canvas in CSS pixels (defaults to the window)
  *   strings        options for the strings' look (see StringsView)
  *   adaptive       let the governor choose the physics step rate (default: unless ?fixed)
@@ -43,11 +44,11 @@ export async function createWorld(canvas, options = {}) {
 	for (let i = 0; i < sim.opts.hz * 4; i++) { controller.update(); sim.step(); }
 
 	const stage = new Stage(canvas);
-	const puppet = buildPuppet('high');
+	const puppet = buildPuppet('high', undefined, rig.model);
 	stage.scene.add(puppet.root);
 	const rigView = new RigView({ materials: puppet.materials });
 	stage.scene.add(rigView.group);
-	const strings = new StringsView({ width: 1.5, color: 0xeadfc6, eyeMaterial: puppet.materials.brass, parts: puppet.parts, ...options.strings });
+	const strings = new StringsView({ width: 1.5, color: 0xeadfc6, eyeMaterial: puppet.materials.brass, parts: puppet.parts, shapes: rig.shapes, ...options.strings });
 	stage.scene.add(strings.group);
 	const stringLoads = [];
 	let shownStrings = null;

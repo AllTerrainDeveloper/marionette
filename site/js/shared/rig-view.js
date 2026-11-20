@@ -121,14 +121,15 @@ export function stringRestLength(def, at = def.at) {
 
 export class StringsView {
 	/**
-	 * opts: { width (px), color, tensionColors (bool), eyeMaterial, parts (puppet part groups) }
+	 * opts: { width (px), color, tensionColors (bool), eyeMaterial, parts (puppet part groups),
+	 *         shapes (the puppet's solid pieces, when it is not the default model) }
 	 */
 	constructor(opts) {
 		this.opts = opts;
 		this.group = new THREE.Group();
 		this.items = [];
 		this.resolution = new THREE.Vector2(1024, 768);
-		this.proxies = buildWrapProxies(BODIES);
+		this.proxies = buildWrapProxies(BODIES, opts.shapes || undefined);
 		this.tangles = new Tangles();   // strings catching on each other: off unless `tangles.enabled` is set
 		this.frame = [];
 	}
