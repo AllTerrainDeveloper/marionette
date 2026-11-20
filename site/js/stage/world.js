@@ -18,6 +18,7 @@ import { Stage } from './scene.js';
 // tools/solver-bench.mjs), so spare time buys smaller steps, and a busy frame gives them back.
 const LEVELS = [[120, 5, 0.8], [180, 5, 0.9], [240, 5, 1], [360, 4, 1.25], [480, 4, 1.5], [720, 4, 2.15], [960, 4, 2.7]];
 const FRAME_MS = 1000 / 60;
+const WRAP_KEY = 'motion-puppet-wrap';   // '0': strings and rods pass through the puppet's limbs (remembered on this device)
 const RESERVE_MS = 4.5;        // of each frame, left for the GPU and the browser
 const PHYSICS_MAX_MS = 9;      // never spend more than this on physics, however idle the rest is
 
@@ -40,6 +41,9 @@ export async function createWorld(canvas, options = {}) {
 	const rig = options.rig || RIG;
 	const sim = new PuppetSim(RAPIER, rig);
 	const controller = new Controller(sim, rig);
+	let wrap = true;
+	try { wrap = localStorage.getItem(WRAP_KEY) !== '0'; } catch { /* private mode: they wrap */ }
+	sim.opts.stringCollision = wrap;
 	// Let the puppet come to rest on its strings before anyone sees it.
 	for (let i = 0; i < sim.opts.hz * 4; i++) { controller.update(); sim.step(); }
 
@@ -49,6 +53,7 @@ export async function createWorld(canvas, options = {}) {
 	const rigView = new RigView({ materials: puppet.materials });
 	stage.scene.add(rigView.group);
 	const strings = new StringsView({ width: 1.5, color: 0xeadfc6, eyeMaterial: puppet.materials.brass, parts: puppet.parts, shapes: rig.shapes, ...options.strings });
+	strings.wrap = wrap;
 	stage.scene.add(strings.group);
 	const stringLoads = [];
 	let shownStrings = null;
@@ -119,6 +124,25 @@ export async function createWorld(canvas, options = {}) {
 			controller.reset();
 			strings.relay();
 			sim.setKnots(null);
+		},
+		/** Do strings catch on the puppet's limbs and wrap round them? Off: every string and rod runs straight through the wood. */
+		get wrap() { return wrap; },
+		setWrap(on, remember = true) {
+			wrap = !!on;
+			sim.opts.stringCollision = wrap;
+			strings.wrap = wrap;
+			sim.strings.forEach((s) => { s.memory.vias = null; s.nodes = s.base = null; });
+			strings.relay();
+			if (remember) try { localStorage.setItem(WRAP_KEY, wrap ? '1' : '0'); } catch { /* not remembered */ }
+		},
+		/** Ties a cut or snapped string again, as Reset does for all of them, leaving the puppet where it is. */
+		retie(index) {
+			const s = sim.strings[index];
+			if (!s) return;
+			s.broken = false; s.over = 0; s.tension = 0; s.force.release();
+			s.memory.vias = null; s.nodes = s.base = null; s.knots = null;
+			const item = strings.items[index];
+			if (item) item.shape.live = false;
 		},
 		/** Restrings the puppet with another table of strings and rods. */
 		setStrings(defs) {

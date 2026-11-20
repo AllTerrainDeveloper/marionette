@@ -43,7 +43,7 @@ const VIEWS = [
 const SHORTCUTS = [
 	['↑ ↓', 'Next / previous link'], ['S', 'Make it a string'], ['D', 'Make it a rod'], ['X', 'Take it off'],
 	['⌘Z', 'Undo'], ['⇧⌘Z', 'Redo'], ['⌘D', 'Duplicate the link'], ['M', 'Mirror it to the other side'], ['Del', 'Remove the link'],
-	['/', 'Find a link'], ['1 – 4', 'Front, side, above, bars'], ['R', 'Reset the puppet'], ['Space', 'Slow motion'], ['?', 'This list'],
+	['/', 'Find a link'], ['1 – 4', 'Front, side, above, bars'], ['R', 'Reset the puppet'], ['W', 'Strings wrap round limbs, or pass through'], ['Space', 'Slow motion'], ['?', 'This list'],
 ];
 
 const KIND_LABEL = { string: 'String', rod: 'Rod', off: 'Off' };
@@ -460,7 +460,9 @@ async function boot() {
 			].filter(Boolean),
 			actions: [
 				{ label: 'Edit in the panel', title: 'Every setting of this link, in the panel', run: () => { const fold = detailEl.closest('details'); fold.open = true; fold.scrollIntoView({ block: 'start', behavior: 'smooth' }); } },
-				kind === 'string' && { label: 'Cut it', title: 'Cut this string now, to see what the puppet does without it. Reset ties it again.', run: () => { const live = sim.strings[selected]; if (live) live.broken = true; toast(`${s.label} cut · Reset ties it again`); } },
+				kind === 'string' && (sim.strings[selected] && sim.strings[selected].broken
+					? { label: 'Tie it again', title: 'Tie this cut string back on, with the puppet where it is', run: () => { world.retie(selected); toast(`${s.label} tied again`); showMenu(); return true; } }
+					: { label: 'Cut it', title: 'Cut this string now, to see what the puppet does without it. “Tie it again” here, or Reset, puts it back.', run: () => { const live = sim.strings[selected]; if (live) live.broken = true; toast(`${s.label} cut`); showMenu(); return true; } }),
 				{ label: 'Duplicate', title: 'A second link like this one (⌘D)', run: duplicate },
 				(twin(s.body) || twin(s.handle)) && { label: 'Mirror', title: 'Make the link on the other side match this one (M)', run: mirror },
 				original && { label: 'As it came', title: 'Put this link back as the default marionette has it', run: () => { doc.strings[selected] = { ...original }; changed(true); renderPresets(); select(selected); return true; } },
@@ -517,6 +519,13 @@ async function boot() {
 	const slow = () => { const on = world.tuning.timeScale === 1; world.tuning.timeScale = on ? 0.25 : 1; $('btn-slow').setAttribute('aria-pressed', String(on)); };
 	$('btn-reset').addEventListener('click', () => { world.reset(); toast('Puppet reset'); });
 	$('btn-slow').addEventListener('click', slow);
+	const wrapButton = $('btn-wrap');
+	wrapButton.setAttribute('aria-pressed', String(world.wrap));
+	wrapButton.addEventListener('click', () => {
+		world.setWrap(!world.wrap);
+		wrapButton.setAttribute('aria-pressed', String(world.wrap));
+		toast(world.wrap ? 'Strings and rods catch on the limbs again' : 'Strings and rods pass straight through the limbs');
+	});
 	$('btn-undo').addEventListener('click', () => travel(undo, redo, 'undo'));
 	$('btn-redo').addEventListener('click', () => travel(redo, undo, 'redo'));
 	$('btn-export').addEventListener('click', () => { if (applyTimer) apply(); downloadJson(doc.name, marionetteDocument(doc.name, doc.strings, doc.model)); });
@@ -557,6 +566,7 @@ async function boot() {
 		if (key === '?') toggleHelp();
 		else if (key === '/') { e.preventDefault(); filterBox.closest('details').open = true; filterBox.focus(); }
 		else if (key === 'r') $('btn-reset').click();
+		else if (key === 'w') wrapButton.click();
 		else if (key === ' ') { e.preventDefault(); slow(); }
 		else if (key >= '1' && key <= String(VIEWS.length)) viewButtons[+key - 1].click();
 		else if (key === 'ArrowDown') { e.preventDefault(); select(selected + 1, true); }

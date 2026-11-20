@@ -128,6 +128,21 @@ async function boot() {
 		if (asked.has('knots') ? asked.get('knots') !== '0' : stored === '1') setKnots(true, true, false);
 	}
 
+	// Wrapping: strings and rods catching on the puppet's limbs. On unless switched off (the
+	// button, W); remembered on this device, and the editor and the Studio follow it.
+	const wrapButton = $('#btn-wrap');
+	function showWrap() {
+		wrapButton.setAttribute('aria-pressed', world.wrap);
+		$('#btn-wrap-label').textContent = world.wrap ? 'Wrap on' : 'Wrap off';
+	}
+	wrapButton.addEventListener('click', () => {
+		world.setWrap(!world.wrap);
+		showWrap();
+		broadcast({ t: 'wrap', on: world.wrap });
+		toast(world.wrap ? 'Strings and rods catch on the limbs again' : 'Strings and rods pass straight through the limbs');
+	});
+	showWrap();
+
 	// Bare stage: tickets, titles and the playbill step out; a faint eye in the corner brings them back.
 	const uiButton = $('#btn-ui');
 	function setBare(bare) {
@@ -161,7 +176,7 @@ async function boot() {
 			s.seq = -1; s.got = false;
 			s.el.classList.add('is-paired');
 			s.state.textContent = 'Connected';
-			link.send({ ...peers(), t: 'welcome', v: PROTOCOL_VERSION, slot: s.slot, mode: controller.mode.id, custom: controller.custom, locks: [...controller.locks], strings: world.rig.strings, model: world.puppet.model });
+			link.send({ ...peers(), t: 'welcome', v: PROTOCOL_VERSION, slot: s.slot, mode: controller.mode.id, custom: controller.custom, locks: [...controller.locks], strings: world.rig.strings, model: world.puppet.model, wrap: world.wrap });
 			broadcast(peers(), s.slot);
 			if (controller.phones === 1) controller.play('greet');
 			toast(`${ROLE_NAMES[s.slot]} has taken the strings`);
@@ -284,7 +299,9 @@ async function boot() {
 			actions: [
 				{ label: 'Tug', title: 'A quick pull up and back', run: () => { tugs.set(s.handle, 0.45); controller.director = hand; return true; } },
 				{ label: 'Let go', title: 'This handle back where it hangs', run: () => { held.delete(s.handle); pulls.delete(s.id); showLinkMenu(index); return true; } },
-				!rod && { label: 'Cut it', title: 'Cut this string now. Reset ties it again.', run: () => { const live = sim.strings[index]; if (live) live.broken = true; toast(`${s.label} cut · Reset ties it again`); } },
+				!rod && (sim.strings[index] && sim.strings[index].broken
+					? { label: 'Tie it again', title: 'Tie this cut string back on, with the puppet where it is', run: () => { world.retie(index); toast(`${s.label} tied again`); showLinkMenu(index); return true; } }
+					: { label: 'Cut it', title: 'Cut this string now. “Tie it again” here, or Reset, puts it back.', run: () => { const live = sim.strings[index]; if (live) live.broken = true; toast(`${s.label} cut`); showLinkMenu(index); return true; } }),
 				others && { label: 'Let go of all', title: 'Every handle back where it hangs', run: () => { letGoAll(); showLinkMenu(index); return true; } },
 				{ label: 'Change it in the editor', wide: true, title: 'String or rod, its slack, where it is tied: the Marionette editor', run: () => { location.href = `editor.html#link=${encodeURIComponent(s.id)}`; } },
 			].filter(Boolean),
@@ -357,6 +374,7 @@ async function boot() {
 		if (e.target instanceof HTMLInputElement) return;
 		if (e.key === 'r') resetPuppet();
 		if (e.key === 'k' && !e.repeat) knotsButton.click();
+		if (e.key === 'w' && !e.repeat) wrapButton.click();
 		if (e.key === 'h' && !e.repeat) uiButton.click();
 		if (e.key === 'q') { stage.setQuality((stage.quality + 2) % 3); resize(); toast(`Quality: ${['low', 'medium', 'high'][stage.quality]}`); }
 		if (e.key === 'd') fpsEl.hidden = !fpsEl.hidden;
